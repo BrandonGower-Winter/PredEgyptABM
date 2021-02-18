@@ -1,0 +1,56 @@
+{
+  "iterations" : 10,
+  "epochs" : 0,
+  "custom_params" : {},
+
+  "model" : {
+    "name" : "EgyptModel",
+    "params" : {
+      "seed" : 123456,
+      "iterations": 10,
+      "img_height" : 800,
+      "img_width" : 800,
+      "heightmap_url" : "../resources/quena.png",
+      "water_mask" : "../resources/river_mask.png",
+      "soil_mask" : "../resources/soil_mask.png",
+      "max_height" : 647,
+      "min_height" : 36,
+      "cell_size" : 3900,
+      "cell_dim" : 62.5,
+      "max_farmable_slope" : 45
+    }
+  },
+
+  "systems" : [
+    {
+        "name" :  "GlobalEnvironmentSystem",
+        "module" : "VegetationModel",
+        "params" :
+        {
+          "id" : "GES",
+          "priority" : 10,
+          "start_temp" : [13,27],
+          "end_temp" : [13,27],
+          "start_rainfall" : [10, 15],
+          "end_rainfall" : [2, 4],
+          "start_flood" : [12, 21],
+          "end_flood" : [8, 11],
+          "soil_depth" : 1000
+        }
+      },
+    {
+      "name" : "SoilMoistureSystem",
+      "module" : "VegetationModel",
+      "params" :
+      {
+        "id" : "SMS",
+        "priority" : 9,
+        "L" : 9.5,
+        "N" : 30,
+        "I" : 52.8
+      }
+    }
+  ],
+
+  "agents" : []
+}
