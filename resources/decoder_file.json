@@ -8,11 +8,13 @@
     "params" : {
       "seed" : 123456,
       "iterations": 10,
-      "img_height" : 800,
-      "img_width" : 800,
-      "heightmap_url" : "../resources/quena.png",
-      "water_mask" : "../resources/river_mask.png",
-      "soil_mask" : "../resources/soil_mask.png",
+      "img_height" : 100,
+      "img_width" : 100,
+      "start_x": 100,
+      "start_y": 100,
+      "heightmap_url" : "./resources/quena.png",
+      "water_mask" : "./resources/river_mask.png",
+      "soil_mask" : "./resources/soil_mask.png",
       "max_height" : 647,
       "min_height" : 36,
       "cell_size" : 3900,
@@ -31,7 +33,7 @@
           "priority" : 10,
           "start_temp" : [13,27],
           "end_temp" : [13,27],
-          "start_rainfall" : [10, 15],
+          "start_rainfall" : [16, 25],
           "end_rainfall" : [2, 4],
           "start_flood" : [12, 21],
           "end_flood" : [8, 11],
@@ -49,8 +51,98 @@
         "N" : 30,
         "I" : 52.8
       }
+    },
+    {
+      "name" : "VegetationGrowthSystem",
+      "module" : "VegetationModel",
+      "params" :
+      {
+        "id" : "VGS",
+        "priority" : 8,
+        "init_pop" : 400,
+        "carry_pop" : 4000,
+        "growth_rate" : 0.05,
+        "decay_rate" : 0.02,
+        "ideal_moisture" : 270
+      }
+    },
+    {
+      "name": "SoilContentSystem",
+      "module": "VegetationModel",
+      "params":
+      {
+        "id": "SCS",
+        "priority": 6,
+        "sand_content_range": [60,100]
+      }
+    },
+    {
+      "name" : "VegetationCollector",
+      "module" : "VegetationModel",
+      "params" :
+      {
+        "id" : "collector"
+      }
+    },
+    {
+      "name" : "AgentResourceAcquisitionSystem",
+      "module" : "Agents",
+      "params" :
+      {
+        "id": "RAS",
+        "priority": 7,
+        "farms_per_patch": 2,
+        "land_buffer": 2,
+        "max_acquisition_distance": 380,
+        "moisture_consumption_rate": 400,
+        "crop_gestation_period": 4,
+        "farming_production_rate": 600,
+        "forage_consumption_rate": 50,
+        "forage_production_multiplier": 8
+      }
+    },
+    {
+      "name": "AgentResourceConsumptionSystem",
+      "module": "Agents",
+      "params":
+      {
+        "id": "RCS",
+        "priority": 6
+      }
+    },
+    {
+      "name": "AgentPopulationSystem",
+      "module": "Agents",
+      "params":
+      {
+        "id": "APS",
+        "priority": 5,
+        "birth_rate": 0.003,
+        "death_rate": 0.001
+      }
+    },
+    {
+      "name": "AgentCollector",
+      "module": "Agents",
+      "params": {
+        "id": "agent_collector"
+      }
     }
   ],
 
-  "agents" : []
+  "agents" : [
+    {
+      "name": "Household",
+      "module": "Agents",
+      "number": 20,
+      "params":
+      {
+        "age_of_maturity": 16,
+        "consumption_rate": 250,
+        "carrying_capacity": 12,
+        "init_occupants": 6,
+        "init_age_range": [14, 25]
+      }
+    }
+  ]
 }
