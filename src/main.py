@@ -9,6 +9,7 @@ from Agents import *
 # Default Decoder file path
 default_path = './resources/decoder_file.json'
 
+
 class EgyptModel(Model, IDecodable):
 
     def __init__(self, width: int, height: int, iterations: int,  heightmap: [[float]], water_map: [[float]],
@@ -138,7 +139,7 @@ def parseArgs():
 layout_dict = {
         'height': 1000,
         'xaxis': dict(title="xCoord"),
-        'yaxis': dict(title="yCoord"),
+        'yaxis': dict(title="yCoord")
     }
 
 if __name__ == '__main__':
@@ -151,51 +152,84 @@ if __name__ == '__main__':
     model.debug = parser.debug
 
     # Run Initialization here
-    if 'RAS' in model.systemManager.systems.keys():
-        for agent in model.environment.getAgents():  # Assign initial position for every agent household
+    if 'APS' in model.systemManager.systems.keys() and 'RAS' in model.systemManager.systems.keys():
+
+        # Assign Random Positions to the Settlements
+        for sID in model.environment[SettlementRelationshipComponent].settlements:
+
             while True:
                 pos_x = model.random.randrange(0, model.environment.width)
                 pos_y = model.random.randrange(0, model.environment.height)
                 unq_id = env.discreteGridPosToID(pos_x, pos_y, model.environment.width)
-                if model.environment.cells['isOwned'][unq_id] == -1 and not model.environment.cells['isWater'][unq_id]:
-                    agent[PositionComponent].x = pos_x
-                    agent[PositionComponent].y = pos_y
-                    agent[ResourceComponent].claim_land(unq_id)
-                    model.environment.cells.at[unq_id, 'isOwned'] = agent.id
+                if model.environment.cells['isSettlement'][unq_id] == -1 and not model.environment.cells['isWater'][unq_id]:
+                    model.environment[SettlementRelationshipComponent].settlements[sID].pos.append(unq_id)
+                    model.environment.cells.at[unq_id, 'isSettlement'] = sID
                     break
+
+        # Update num_households to APS
+        model.systemManager.systems['APS'].num_households = len(model.environment.agents)
+
+        # Assign Households to Settlements
+        for agent in model.environment.getAgents():
+            s = model.random.choice(model.environment[SettlementRelationshipComponent].settlements)  # Get ID
+            model.environment[SettlementRelationshipComponent].add_household_to_settlement(agent, s.id)  # Add household
+
+            # Set household position
+            h_pos = model.environment.cells['pos'][model.environment[SettlementRelationshipComponent].settlements[s.id].pos[-1]]
+
+            agent[PositionComponent].x = h_pos[0]
+            agent[PositionComponent].y = h_pos[1]
+
+        # Clean up empty settlements
+        for sID in [s for s in model.environment[SettlementRelationshipComponent].settlements]:
+
+            if len(model.environment[SettlementRelationshipComponent].settlements[sID].occupants) == 0:
+                model.environment[SettlementRelationshipComponent].remove_settlement(sID)
 
     for i in range(model.iterations):
         print('Iteration: {} : {}%'.format(i, i/model.iterations * 100))
         model.systemManager.executeSystems()
+        # print(model.systemManager.systems['GES'])
 
     if parser.visualize:
         webApp = vis.VisualInterface("Predynastic Egypt", model)
 
+        heightArr = []
         vegetationArr = []
         moistureArr = []
-        sandArr = []
         landOwnershipArr = []
+        settlementOwnershipArr = []
 
         xdim = [i for i in range(model.iterations)]
 
         for x in range(model.environment.width):
+            heightRow = []
             vegRow = []
             moistRow = []
-            sandRow = []
             ownRow = []
+            settleRow = []
 
             for y in range(model.environment.height):
-
                 id = env.discreteGridPosToID(x, y, model.environment.width)
+                heightRow.append(model.environment.cells['height'][id])
                 vegRow.append(model.environment.cells['vegetation'][id])
                 moistRow.append(model.environment.cells['moisture'][id])
-                sandRow.append(model.environment.cells['sand_content'][id])
-                ownRow.append(model.environment.cells['isOwned'][id])
+                houseID = model.environment.cells['isOwned'][id]
+                ownRow.append(str(houseID))
+                settleRow.append(str(houseID if houseID == -1 else model.environment.getAgent(houseID)[HouseholdRelationshipComponent].settlementID))
 
+            heightArr.append(heightRow)
             vegetationArr.append(vegRow)
             moistureArr.append(moistRow)
-            sandArr.append(sandRow)
             landOwnershipArr.append(ownRow)
+            settlementOwnershipArr.append(settleRow)
+
+        webApp.addDisplay(vis.createGraph('height_heatmap', vis.createHeatMapGL(
+            "Heightmap", heightArr,
+            heatmap_kwargs={'colorbar': dict(title="Height(m)")},
+            layout_kwargs=layout_dict)
+                                          )
+                          )
 
         webApp.addDisplay(vis.createGraph('vegetation_heatmap', vis.createHeatMapGL(
             "Final Vegetation Data", vegetationArr,
@@ -223,13 +257,6 @@ if __name__ == '__main__':
             ], layout_kwargs=layout_dict
         )))
 
-        webApp.addDisplay(vis.createGraph('sand_heatmap', vis.createHeatMapGL(
-            "Final Sand Content", sandArr,
-            heatmap_kwargs={'colorbar': dict(title="Sand Content (%)")},
-            layout_kwargs=layout_dict)
-                                          )
-                          )
-
         agent_col_records = model.systemManager.systems['agent_collector'].records
         pop_plots = {}
 
@@ -240,16 +267,25 @@ if __name__ == '__main__':
                     pop_plots[key]['xdim'] = [x]
                     pop_plots[key]['resources'] = [agent_col_records[x][key]['resources']]
                     pop_plots[key]['population'] = [agent_col_records[x][key]['population']]
+                    pop_plots[key]['satisfaction'] = [agent_col_records[x][key]['satisfaction']]
+                    pop_plots[key]['load'] = [agent_col_records[x][key]['load']]
                 else:
                     pop_plots[key]['xdim'].append(x)
                     pop_plots[key]['resources'].append(agent_col_records[x][key]['resources'])
                     pop_plots[key]['population'].append(agent_col_records[x][key]['population'])
-
-
+                    pop_plots[key]['satisfaction'].append(agent_col_records[x][key]['satisfaction'])
+                    pop_plots[key]['load'].append(agent_col_records[x][key]['load'])
 
         webApp.addDisplay(vis.createGraph('resources_scatter', vis.createScatterGLPlot(
             'Household Resources', [
                 [pop_plots[key]['xdim'], pop_plots[key]['resources'], {'name': ('Household %d' % key if isinstance(key, int) else key)}]
+                for key in pop_plots], layout_kwargs=layout_dict
+        )))
+
+        webApp.addDisplay(vis.createGraph('load_scatter', vis.createScatterGLPlot(
+            'Household Load', [
+                [pop_plots[key]['xdim'], pop_plots[key]['load'],
+                 {'name': ('Household %d' % key if isinstance(key, int) else key)}]
                 for key in pop_plots], layout_kwargs=layout_dict
         )))
 
@@ -260,11 +296,56 @@ if __name__ == '__main__':
                 for key in pop_plots], layout_kwargs=layout_dict
         )))
 
-        webApp.addDisplay(vis.createGraph('ownership_landmap', vis.createHeatMapGL(
+        webApp.addDisplay(vis.createGraph('satisfaction_scatter', vis.createScatterGLPlot(
+            'Household Satisfaction', [
+                [pop_plots[key]['xdim'], pop_plots[key]['satisfaction'],
+                 {'name': ('Household %d' % key if isinstance(key, int) else key)}]
+                for key in pop_plots], layout_kwargs=layout_dict
+        )))
+
+        action_records = model.systemManager.systems['action_collector'].records
+
+        webApp.addDisplay(vis.createGraph('action_scatter', vis.createScatterGLPlot(
+            'Household Actions', [
+                [xdim, [ac['farm_count'] for ac in action_records], {'name': 'farm_count'}],
+                [xdim, [ac['forage_count'] for ac in action_records], {'name': 'forage_count'}],
+                [xdim, [ac['loan_count'] for ac in action_records], {'name': 'loan_count'}]]
+            , layout_kwargs=layout_dict
+        )))
+
+        land_map = dict(
+            source="./resources/Qena_Rescaled.png",
+            xref="x",
+            yref="y",
+            x=0,
+            y=3,
+            sizex=model.environment.width,
+            sizey=model.environment.height,
+            sizing="stretch",
+            opacity=1.0,
+            layer="below")
+
+        colors = [[0, 'rgba(0,0,255, 0)'], [0.1, 'rgba(0,255,0, 255)'], [0.6, 'rgba(255,0,0,255)'], [1.0, 'rgba(0,0,255, 255)']]
+
+        fig_to_add = vis.createHeatMapGL(
             "Final Ownership Heatmap", landOwnershipArr,
-            heatmap_kwargs={'colorbar': dict(title="Ownership (id)")},
+            heatmap_kwargs={'colorbar': dict(title="Ownership (id)"), 'colorscale': colors},
+            layout_kwargs=layout_dict)
+
+        fig_to_add.add_layout_image(land_map)
+        webApp.addDisplay(vis.createGraph('ownership_landmap', fig_to_add))
+
+        webApp.addDisplay(vis.createGraph('settlement_landmap', vis.createHeatMapGL(
+            "Final Settlement Heatmap", settlementOwnershipArr,
+            heatmap_kwargs={'colorbar': dict(title="Settlement (id)")},
             layout_kwargs=layout_dict)
                                           )
                           )
+
+        print('Number of Households: ' + str(len(model.environment.getAgents())))
+        print('Number of Settlements: ' + str(len(model.environment[SettlementRelationshipComponent].settlements)))
+
+        for agent in model.environment.getAgents():
+            print(agent)
 
         webApp.app.run_server()

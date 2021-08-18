@@ -4,7 +4,7 @@ install: venv
 	. venv/bin/activate; pip3 install -Ur requirements.txt
 
 venv :
-	test -d venv || virtualenv -p $(PATH_TO_PYPY) venv
+	test -d venv || python3 -m venv venv
 
 profile: venv
 	. venv/bin/activate; python -m vmprof ./src/main.py

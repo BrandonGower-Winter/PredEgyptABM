@@ -51,6 +51,8 @@ class SoilMoistureComponent(Component):
 
         self.avgWaterHeight = sum / count if count != 0 else 1.0
 
+        print(self.avgWaterHeight)
+
 
 class VegetationGrowthComponent(Component):
 
@@ -122,6 +124,13 @@ class GlobalEnvironmentSystem(System, IDecodable):
                           self.model.environment.getComponent(GlobalEnvironmentComponent).rainfall,
                           self.model.environment.getComponent(GlobalEnvironmentComponent).flood))
 
+    def __str__(self):
+        return 'Global_Properties:\n\nAvg River Height: {}\nTemperatures: {}C\nRainfall: {}mm\nFlood: {}m\n'.format(
+            self.model.environment.getComponent(SoilMoistureComponent).avgWaterHeight,
+            self.model.environment.getComponent(GlobalEnvironmentComponent).temp,
+            self.model.environment.getComponent(GlobalEnvironmentComponent).rainfall,
+            self.model.environment.getComponent(GlobalEnvironmentComponent).flood)
+
 
 class SoilMoistureSystem(System, IDecodable):
 
@@ -172,12 +181,31 @@ class SoilMoistureSystem(System, IDecodable):
     def wfc(soil_depth, sand_content):
         return soil_depth * lerp(0.3, 0.7, 1 - (sand_content/100.0))
 
+
+    def is_flooded(self, unq_id: int):
+        sm_comp = self.model.environment.getComponent(SoilMoistureComponent)
+        global_env_comp = self.model.environment.getComponent(GlobalEnvironmentComponent)
+
+        return self.model.environment.cells['height'][unq_id] < global_env_comp.flood + sm_comp.avgWaterHeight
+
+    def get_soil_moisture(self, unq_id: int):
+        sm_comp = self.model.environment.getComponent(SoilMoistureComponent)
+        global_env_comp = self.model.environment.getComponent(GlobalEnvironmentComponent)
+
+        if self.is_flooded(unq_id):
+            return SoilMoistureSystem.wfc(global_env_comp.soil_depth, self.model.environment.cells['sand_content'][unq_id])
+        else:
+            return self.model.environment.cells['moisture'][unq_id]
+
+    def set_soil_moisture(self, unq_id: int, val: float):
+
+        if not self.is_flooded(unq_id):
+            self.model.environment.cells.at[unq_id, 'moisture'] = val
+
     def execute(self):
 
         sm_comp = self.model.environment.getComponent(SoilMoistureComponent)
         global_env_comp = self.model.environment.getComponent(GlobalEnvironmentComponent)
-
-        floodCheckVal = global_env_comp.flood + sm_comp.avgWaterHeight
 
         soilVals = self.model.environment.cells['moisture'].tolist()
 
@@ -187,12 +215,12 @@ class SoilMoistureSystem(System, IDecodable):
                 cellID = discreteGridPosToID(x, y, self.model.environment.width)
 
                 if self.model.environment.cells['isWater'][cellID]:
-                    pass
+                    continue
 
-                if self.model.environment.cells['height'][cellID] < floodCheckVal:
+                if self.is_flooded(cellID):
                     soilVals[cellID] = SoilMoistureSystem.wfc(global_env_comp.soil_depth,
                                                               self.model.environment.cells['sand_content'][cellID])
-                    pass
+                    continue
 
                 for i in range(12):
                     PET = SoilMoistureSystem.thornthwaite(sm_comp.L, sm_comp.N, global_env_comp.temp[i], sm_comp.I)
@@ -271,9 +299,9 @@ class VegetationGrowthSystem(System, IDecodable):
         return -0.0005 * math.pow(temp - 20.0, 2) + 1
 
     @staticmethod
-    def tempPenalty(temperature: float):
+    def tempPenalty(temperature: float, model : Model):
         topt = VegetationGrowthSystem.tOpt(temperature)
-        return 0.8 + 0.02 * topt - 0.0005 * math.pow(topt,2)
+        return model.random.uniform(0.8 - 0.0005 * math.pow(topt, 2), 0.8 + 0.02 * topt)
 
     def execute(self):
 
@@ -287,8 +315,8 @@ class VegetationGrowthSystem(System, IDecodable):
 
                 cellID = discreteGridPosToID(x, y, self.model.environment.width)
 
-                if self.model.environment.cells['isWater'][cellID]:
-                    pass
+                if self.model.environment.cells['isWater'][cellID] or self.model.environment.cells['isOwned'][cellID] != -1:
+                    continue
 
                 # Check for cell refill given neighbour's vegetation density
                 if veg_vals[cellID] < 1.0:
@@ -306,13 +334,16 @@ class VegetationGrowthSystem(System, IDecodable):
                     capacity_ratio = veg_vals[cellID]/self.model.environment.getComponent(
                         VegetationGrowthComponent).carry_pop
 
-                    r, soil_vals[cellID] = VegetationGrowthSystem.waterPenalty(soil_vals[cellID],
+                    if self.model.systemManager.systems['SMS'].is_flooded(cellID):
+                        r = 1.0
+                    else:
+                        r, soil_vals[cellID] = VegetationGrowthSystem.waterPenalty(soil_vals[cellID],
                                                                            self.model.environment.getComponent(
                                                                                VegetationGrowthComponent
                                                                            ).ideal_moisture, capacity_ratio)
 
                     r *= VegetationGrowthSystem.tempPenalty(
-                        np.mean(self.model.environment.getComponent(GlobalEnvironmentComponent).temp)
+                        np.mean(self.model.environment.getComponent(GlobalEnvironmentComponent).temp), self.model
                     )
                     veg_vals[cellID] -= VegetationGrowthSystem.decay(veg_vals[cellID], vg_comp.decay_rate)
                     veg_vals[cellID] += VegetationGrowthSystem.Logistic_Growth(veg_vals[cellID], vg_comp.carry_pop * r,
@@ -333,10 +364,11 @@ class VegetationGrowthSystem(System, IDecodable):
 
 
 class SoilContentSystem(System, IDecodable):
-    def __init__(self, id: str, model: Model, sand_content_range, priority=0, frequency=1, start=0, end=maxsize):
+    def __init__(self, id: str, model: Model, sand_content_range, degradation_factor, priority=0, frequency=1, start=0, end=maxsize):
         super().__init__(id, model, priority, frequency, start, end)
 
         self.sand_content_range = sand_content_range
+        self.degradation_factor = degradation_factor
 
     def execute(self):
 
@@ -346,14 +378,17 @@ class SoilContentSystem(System, IDecodable):
         for i in range(len(sand_cells)):
             sand_cells[i] = lerp(self.sand_content_range[0], self.sand_content_range[1],
                                   1.0 - vegetation_cells[i]/self.model.environment.getComponent(VegetationGrowthComponent).carry_pop)
-            if(1.0 - vegetation_cells[i]/self.model.environment.getComponent(VegetationGrowthComponent).carry_pop < 0.0):
-                print(vegetation_cells[i])
+
+        # For each cell
+        # If flooded: leave alone
+        # If farmed: degrade by degradation factor
+        # If neither:
 
         self.model.environment.cells.update({'sand_content': sand_cells})
 
     @staticmethod
     def decode(params: dict):
-        return SoilContentSystem(params['id'], params['model'], params['sand_content_range'],
+        return SoilContentSystem(params['id'], params['model'], params['sand_content_range'], params['degradation_factor'],
                                  priority=params['priority'])
 
 
