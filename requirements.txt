@@ -1,8 +1,7 @@
-numpy
+matplotlib
 pandas
 dash
 ECAgent
 Pillow
 argparse
-matplotlib
 animatplot
