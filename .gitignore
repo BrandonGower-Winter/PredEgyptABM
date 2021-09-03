@@ -132,6 +132,6 @@ dmypy.json
 .idea/
 
 # Generated files
-.dat
-.log
+*.dat
+*.log
 .DS_Store
