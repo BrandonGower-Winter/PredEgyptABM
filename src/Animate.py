@@ -28,11 +28,11 @@ def generateAnimat(records: [[float]], fps: int = 1, vmin=0, vmax=255, generate_
 
 if __name__ == '__main__':
 
-	infile = "./model_5000.dat"
-	outfile = "./resources/house_movement_5000"
+	infile = "./model_faiyum_1000_3.dat"
+	outfile = "./resources/house_movement_faiyum_1000_phouse"
 
-	height = 200
-	width = 200
+	height = 250
+	width = 150
 
 	records = []
 
@@ -53,5 +53,5 @@ if __name__ == '__main__':
 
 			records.append(record)
 
-	generateAnimat(records, vmin=0, vmax=1, fps=10, filename=outfile, generate_gif=True)
+	generateAnimat(records, vmin=-1, vmax=2, fps=10, filename=outfile, generate_gif=True)
 

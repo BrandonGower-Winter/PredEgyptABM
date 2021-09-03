@@ -33,7 +33,7 @@ class GlobalEnvironmentComponent(Component):
 
 class SoilMoistureComponent(Component):
 
-    def __init__(self, agent, model: Model, L: int, N: int, I: float):
+    def __init__(self, agent, model: Model, L: int, N: int, I: float, flood_cell_divide: int):
         super().__init__(agent, model)
 
         self.L = L
@@ -42,16 +42,58 @@ class SoilMoistureComponent(Component):
 
         # Get avg water cell height
         isWaterArr = model.environment.cells['isWater'].tolist()
-        sum = 0.0
+        total = 0.0
         count = 0
-        for x in range(len(isWaterArr)):
-            if isWaterArr[x]:
-                sum += model.environment.cells['height'][x]
-                count += 1
 
-        self.avgWaterHeight = sum / count if count != 0 else 1.0
+        self.avg_water_heights = []
+        self.flood_cell_divide = flood_cell_divide
+        self.flood_divide_ratio = self.model.environment.width // flood_cell_divide
 
-        print(self.avgWaterHeight)
+        for y_block in range(math.ceil(self.model.environment.height / flood_cell_divide)):
+            for x_block in range(math.ceil(self.model.environment.width / flood_cell_divide)):
+
+                total = 0.0
+                count = 0
+
+                for x in range(flood_cell_divide):
+                    x_coord = x + (x_block * flood_cell_divide)
+                    for y in range(flood_cell_divide):
+                        y_coord = y + (y_block * flood_cell_divide)
+
+                        unq_id = discreteGridPosToID(x_coord, y_coord, model.environment.width)
+
+                        if isWaterArr[unq_id]:
+                            total += model.environment.cells['height'][unq_id]
+                            count +=1
+
+                self.avg_water_heights.append(0.0 if count == 0 else total / count)
+
+        # Fill other cells using cells that have water
+        has_changes = True
+        while has_changes:
+            has_changes = False
+
+            for i in range(len(self.avg_water_heights)):
+                if self.avg_water_heights[i] == 0.0:
+                    # Derive flood height using neighbouring cells
+
+                    neighbours = [self.avg_water_heights[i - self.flood_divide_ratio] if i >= self.flood_divide_ratio else 0.0,
+                                  self.avg_water_heights[i + self.flood_divide_ratio] if i < len(self.avg_water_heights) - self.flood_divide_ratio else 0.0,
+                                  self.avg_water_heights[i - 1] if i % self.flood_divide_ratio != 0 else 0.0,
+                                  self.avg_water_heights[i + 1] if (i+1) % self.flood_divide_ratio != 0 else 0.0]
+
+                    valid_cells = len([x for x in neighbours if x != 0.0])
+                    self.avg_water_heights[i] = sum(neighbours) / valid_cells if valid_cells != 0 else 0.0
+
+                    if self.avg_water_heights[i] != 0.0:
+                        has_changes = True
+
+        #if self.model.debug:
+            #print(self.avg_water_heights)
+
+    def avgWaterHeight(self, pos: (int, int)):
+        return self.avg_water_heights[discreteGridPosToID(pos[0] // self.flood_cell_divide,
+                                                          pos[1] // self.flood_cell_divide, self.flood_divide_ratio)]
 
 
 class VegetationGrowthComponent(Component):
@@ -119,14 +161,14 @@ class GlobalEnvironmentSystem(System, IDecodable):
 
         if self.model.debug:
             print('Global_Properties:\n\n%: {}\nAvg River Height: {}\nTemperatures: {}C\nRainfall: {}mm\nFlood: {}m\n'
-                  .format(percentage * 100, self.model.environment.getComponent(SoilMoistureComponent).avgWaterHeight,
+                  .format(percentage * 100, self.model.environment.getComponent(SoilMoistureComponent).avg_water_heights,
                           self.model.environment.getComponent(GlobalEnvironmentComponent).temp,
                           self.model.environment.getComponent(GlobalEnvironmentComponent).rainfall,
                           self.model.environment.getComponent(GlobalEnvironmentComponent).flood))
 
     def __str__(self):
         return 'Global_Properties:\n\nAvg River Height: {}\nTemperatures: {}C\nRainfall: {}mm\nFlood: {}m\n'.format(
-            self.model.environment.getComponent(SoilMoistureComponent).avgWaterHeight,
+            self.model.environment.getComponent(SoilMoistureComponent).avg_water_heights,
             self.model.environment.getComponent(GlobalEnvironmentComponent).temp,
             self.model.environment.getComponent(GlobalEnvironmentComponent).rainfall,
             self.model.environment.getComponent(GlobalEnvironmentComponent).flood)
@@ -134,16 +176,17 @@ class GlobalEnvironmentSystem(System, IDecodable):
 
 class SoilMoistureSystem(System, IDecodable):
 
-    def __init__(self, id: str, model: Model, L: int, N: int, I: float, priority=0, frequency=1, start=0, end=maxsize):
+    def __init__(self, id: str, model: Model, L: int, N: int, I: float, flood_cell_size: int,
+                 priority=0, frequency=1, start=0, end=maxsize):
         super().__init__(id, model, priority, frequency, start, end)
 
-        model.environment.addComponent(SoilMoistureComponent(model.environment, model, L, N, I))
+        model.environment.addComponent(SoilMoistureComponent(model.environment, model, L, N, I, flood_cell_size))
 
         def moisture_generator(pos, cells):
-            cellID = discreteGridPosToID(pos[0], pos[1] , model.environment.width)
+            cellID = discreteGridPosToID(pos[0], pos[1], model.environment.width)
             return SoilMoistureSystem.wfc(model.environment.getComponent(GlobalEnvironmentComponent).soil_depth,
                    cells['sand_content'][cellID]) * min(1.0,
-                        math.pow(cells['height'][cellID] / model.environment.getComponent(SoilMoistureComponent).avgWaterHeight, 2))
+                        math.pow(cells['height'][cellID] / model.environment.getComponent(SoilMoistureComponent).avgWaterHeight(pos), 2))
 
         model.environment.addCellComponent('moisture', moisture_generator)
 
@@ -153,7 +196,7 @@ class SoilMoistureSystem(System, IDecodable):
     @staticmethod
     def decode(params: dict):
         return SoilMoistureSystem(params['id'], params['model'], params['L'], params['N'], params['I'],
-                                  priority=params['priority'])
+                                  params['flood_cell_divide'], priority=params['priority'])
 
     @staticmethod
     def thornthwaite(day_length : int, days: int, avg_temp: int, heat_index : float):
@@ -186,7 +229,7 @@ class SoilMoistureSystem(System, IDecodable):
         sm_comp = self.model.environment.getComponent(SoilMoistureComponent)
         global_env_comp = self.model.environment.getComponent(GlobalEnvironmentComponent)
 
-        return self.model.environment.cells['height'][unq_id] < global_env_comp.flood + sm_comp.avgWaterHeight
+        return self.model.environment.cells['height'][unq_id] < global_env_comp.flood + sm_comp.avgWaterHeight(self.model.environment.cells['pos'][unq_id])
 
     def get_soil_moisture(self, unq_id: int):
         sm_comp = self.model.environment.getComponent(SoilMoistureComponent)

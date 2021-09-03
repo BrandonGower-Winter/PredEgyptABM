@@ -1,29 +1,38 @@
 import argparse
+import logging
+import time
 
 import ECAgent.Environments as env
 import ECAgent.Visualization as vis
 
-from VegetationModel import *
 from Agents import *
+from VegetationModel import *
+from Logging import ILoggable
+
+from Progress import progress
 
 # Default Decoder file path
 default_path = './resources/decoder_file.json'
+store_path = ''
 
 
-class EgyptModel(Model, IDecodable):
+class EgyptModel(Model, IDecodable, ILoggable):
 
-    def __init__(self, width: int, height: int, iterations: int,  heightmap: [[float]], water_map: [[float]],
+    def __init__(self, width: int, height: int, iterations: int, seed: int, heightmap: [[float]], water_map: [[float]],
                  soil_map: [[float]], cellSize: int, debug: bool = True):
-        super().__init__(None)
 
-        if debug: print('Creating Gridworld')
+        Model.__init__(self, seed=seed, logger=None)
+        IDecodable.__init__(self)
+        ILoggable.__init__(self, logger_name='model', level=logging.INFO)
+
+        logging.info('\t-Creating Gridworld')
 
         self.debug = debug
         self.environment = env.GridWorld(width, height, self)
         self.cellSize = cellSize
         self.iterations = iterations
 
-        if debug: print('Loading Heightmap')
+        logging.info('\t-Loading Heightmap')
 
         def elevation_generator_functor(pos, cells):
             return heightmap[pos[0]][pos[1]]
@@ -36,15 +45,13 @@ class EgyptModel(Model, IDecodable):
 
         self.environment.addCellComponent('height', elevation_generator_functor)
 
-        if debug:
-            print('Generating Watermap')
+        logging.info('\t-Generating Watermap')
 
         self.environment.addCellComponent('isWater', is_water_generator)
 
         # Generate slope data
 
-        if debug:
-            print('Generating Slopemap')
+        logging.info('\t-Generating Slopemap')
 
         def slopemap_generator(pos, cells):
             id = env.discreteGridPosToID(pos[0], pos[1], width)
@@ -65,8 +72,7 @@ class EgyptModel(Model, IDecodable):
 
         self.environment.addCellComponent('slope', slopemap_generator)
 
-        if debug:
-            print('Generating Soil Data')
+        logging.info('\t-Generating Soil Data')
 
         self.environment.addCellComponent('sand_content', soil_generator)
 
@@ -110,7 +116,8 @@ class EgyptModel(Model, IDecodable):
             water_map.append(water_row)
             soil_map.append(soil_row)
 
-        return EgyptModel(width, height, params['iterations'], heightmap,water_map, soil_map, params['cell_dim'])
+        return EgyptModel(width, height, params['iterations'], params['seed'],
+                          heightmap, water_map, soil_map, params['cell_dim'])
 
 
 class CellComponent(Component):
@@ -132,8 +139,33 @@ def parseArgs():
                         action='store_true')
     parser.add_argument('-d', '--debug', help='Sets the model to debug mode. Output printed to terminal will be verbose',
                         action='store_true')
+    parser.add_argument('-r', '--record', help='Path to generated .log file.', default=store_path)
 
     return parser.parse_args()
+
+
+def addDebugHandler(isDebug: bool):
+    root = logging.getLogger('')
+    root.setLevel(logging.DEBUG if isDebug else logging.INFO)
+
+    console = logging.StreamHandler()
+    console.setLevel(logging.DEBUG if isDebug else logging.INFO)
+    formatter = logging.Formatter('%(message)s')
+    console.setFormatter(formatter)
+    root.addHandler(console)
+
+
+def addFileHandler(file_path):
+    fh_logger = logging.getLogger('model')
+    fh_logger.propagate = False
+    fh_logger.setLevel(logging.INFO)
+
+    fh = logging.FileHandler(filename=file_path, mode='w')
+    fh.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(message)s')
+    fh.setFormatter(formatter)
+
+    fh_logger.addHandler(fh)
 
 
 layout_dict = {
@@ -142,54 +174,88 @@ layout_dict = {
         'yaxis': dict(title="yCoord")
     }
 
-if __name__ == '__main__':
 
-    parser = parseArgs()
+def init_settlements(params : dict):
+    model = params['model']
+    # Assign Settlement Positions based on selected strategy
 
-    print("Creating Model...")
-    model = JsonDecoder().decode(parser.file)
-
-    model.debug = parser.debug
-
-    # Run Initialization here
-    if 'APS' in model.systemManager.systems.keys() and 'RAS' in model.systemManager.systems.keys():
-
-        # Assign Random Positions to the Settlements
-        for sID in model.environment[SettlementRelationshipComponent].settlements:
-
+    for sID in model.environment[SettlementRelationshipComponent].settlements:
+        if params['strategy'] == 'cluster':
+            cluster = model.random.choice(params['clusters'])
             while True:
-                pos_x = model.random.randrange(0, model.environment.width)
-                pos_y = model.random.randrange(0, model.environment.height)
+                pos_x = model.random.randrange(max(cluster[0] - params['range'], 0),
+                                               min(cluster[0] + params['range'], model.environment.width))
+                pos_y = model.random.randrange(max(cluster[1] - params['range'], 0),
+                                               min(cluster[1] + params['range'], model.environment.height))
+
                 unq_id = env.discreteGridPosToID(pos_x, pos_y, model.environment.width)
                 if model.environment.cells['isSettlement'][unq_id] == -1 and not model.environment.cells['isWater'][unq_id]:
                     model.environment[SettlementRelationshipComponent].settlements[sID].pos.append(unq_id)
                     model.environment.cells.at[unq_id, 'isSettlement'] = sID
                     break
+        else:
+            while True:
+                pos_x = model.random.randrange(0, model.environment.width)
+                pos_y = model.random.randrange(0, model.environment.height)
+                unq_id = env.discreteGridPosToID(pos_x, pos_y, model.environment.width)
+                if model.environment.cells['isSettlement'][unq_id] == -1 and not model.environment.cells['isWater'][
+                    unq_id]:
+                    model.environment[SettlementRelationshipComponent].settlements[sID].pos.append(unq_id)
+                    model.environment.cells.at[unq_id, 'isSettlement'] = sID
+                    break
 
-        # Update num_households to APS
-        model.systemManager.systems['APS'].num_households = len(model.environment.agents)
 
-        # Assign Households to Settlements
-        for agent in model.environment.getAgents():
-            s = model.random.choice(model.environment[SettlementRelationshipComponent].settlements)  # Get ID
-            model.environment[SettlementRelationshipComponent].add_household_to_settlement(agent, s.id)  # Add household
+    # Update num_households to APS
+    model.systemManager.systems['APS'].num_households = len(model.environment.agents)
 
-            # Set household position
-            h_pos = model.environment.cells['pos'][model.environment[SettlementRelationshipComponent].settlements[s.id].pos[-1]]
+    # Assign Households to Settlements
+    for agent in model.environment.getAgents():
+        s = model.random.choice(model.environment[SettlementRelationshipComponent].settlements)  # Get ID
+        model.environment[SettlementRelationshipComponent].add_household_to_settlement(agent, s.id)  # Add household
 
-            agent[PositionComponent].x = h_pos[0]
-            agent[PositionComponent].y = h_pos[1]
+        # Set household position
+        h_pos = model.environment.cells['pos'][
+            model.environment[SettlementRelationshipComponent].settlements[s.id].pos[-1]]
 
-        # Clean up empty settlements
-        for sID in [s for s in model.environment[SettlementRelationshipComponent].settlements]:
+        agent[PositionComponent].x = h_pos[0]
+        agent[PositionComponent].y = h_pos[1]
 
-            if len(model.environment[SettlementRelationshipComponent].settlements[sID].occupants) == 0:
-                model.environment[SettlementRelationshipComponent].remove_settlement(sID)
+    # Clean up empty settlements
+    for sID in [s for s in model.environment[SettlementRelationshipComponent].settlements]:
+
+        if len(model.environment[SettlementRelationshipComponent].settlements[sID].occupants) == 0:
+            model.environment[SettlementRelationshipComponent].remove_settlement(sID)
+
+
+if __name__ == '__main__':
+
+    parser = parseArgs()
+
+    start_time = time.time()
+
+    addDebugHandler(parser.debug)
+
+    if parser.record != '':
+        logging.info('Adding FileHandler to store logs in file: {}'.format(parser.record))
+        addFileHandler(parser.record)
+
+    logging.info("Creating Model...")
+    model = JsonDecoder().decode(parser.file)
+    logging.info('...Done!')
+
+    model.debug = parser.debug
 
     for i in range(model.iterations):
-        print('Iteration: {} : {}%'.format(i, i/model.iterations * 100))
+        model.logger.info('ITERATION: {}'.format(i))
+
+        if not model.debug:
+            progress(i, model.iterations)
+
         model.systemManager.executeSystems()
-        # print(model.systemManager.systems['GES'])
+        if len(model.environment.agents) == 0:
+            break
+
+    logging.info('Simulation Completed:\nTime Elapsed ({}s)'.format(time.time() - start_time))
 
     if parser.visualize:
         webApp = vis.VisualInterface("Predynastic Egypt", model)
@@ -244,12 +310,12 @@ if __name__ == '__main__':
             ], layout_kwargs=layout_dict
         )))
 
-        webApp.addDisplay(vis.createGraph('moisture_heatmap', vis.createHeatMapGL(
-            "Final Moisture Data", moistureArr,
-            heatmap_kwargs={'colorbar': dict(title="Soil Moisture (mm)")},
-            layout_kwargs=layout_dict)
-                                          )
-                          )
+        #webApp.addDisplay(vis.createGraph('moisture_heatmap', vis.createHeatMapGL(
+         #   "Final Moisture Data", moistureArr,
+          #  heatmap_kwargs={'colorbar': dict(title="Soil Moisture (mm)")},
+           # layout_kwargs=layout_dict)
+            #                              )
+             #             )
 
         webApp.addDisplay(vis.createGraph('moisture_scatter', vis.createScatterGLPlot(
             'Mean Soil Moisture', [
@@ -313,34 +379,34 @@ if __name__ == '__main__':
             , layout_kwargs=layout_dict
         )))
 
-        land_map = dict(
-            source="./resources/Qena_Rescaled.png",
-            xref="x",
-            yref="y",
-            x=0,
-            y=3,
-            sizex=model.environment.width,
-            sizey=model.environment.height,
-            sizing="stretch",
-            opacity=1.0,
-            layer="below")
+        #land_map = dict(
+         #   source="./resources/Qena_Rescaled.png",
+          #  xref="x",
+           # yref="y",
+           # x=0,
+           # y=3,
+           # sizex=model.environment.width,
+           # sizey=model.environment.height,
+           # sizing="stretch",
+           # opacity=1.0,
+           # layer="below")
 
-        colors = [[0, 'rgba(0,0,255, 0)'], [0.1, 'rgba(0,255,0, 255)'], [0.6, 'rgba(255,0,0,255)'], [1.0, 'rgba(0,0,255, 255)']]
+        #colors = [[0, 'rgba(0,0,255, 0)'], [0.1, 'rgba(0,255,0, 255)'], [0.6, 'rgba(255,0,0,255)'], [1.0, 'rgba(0,0,255, 255)']]
 
-        fig_to_add = vis.createHeatMapGL(
-            "Final Ownership Heatmap", landOwnershipArr,
-            heatmap_kwargs={'colorbar': dict(title="Ownership (id)"), 'colorscale': colors},
-            layout_kwargs=layout_dict)
+        #fig_to_add = vis.createHeatMapGL(
+         #   "Final Ownership Heatmap", landOwnershipArr,
+          #  heatmap_kwargs={'colorbar': dict(title="Ownership (id)"), 'colorscale': colors},
+           # layout_kwargs=layout_dict)
 
-        fig_to_add.add_layout_image(land_map)
-        webApp.addDisplay(vis.createGraph('ownership_landmap', fig_to_add))
+        #fig_to_add.add_layout_image(land_map)
+        #webApp.addDisplay(vis.createGraph('ownership_landmap', fig_to_add))
 
-        webApp.addDisplay(vis.createGraph('settlement_landmap', vis.createHeatMapGL(
-            "Final Settlement Heatmap", settlementOwnershipArr,
-            heatmap_kwargs={'colorbar': dict(title="Settlement (id)")},
-            layout_kwargs=layout_dict)
-                                          )
-                          )
+        #webApp.addDisplay(vis.createGraph('settlement_landmap', vis.createHeatMapGL(
+           #"Final Settlement Heatmap", settlementOwnershipArr,
+            #heatmap_kwargs={'colorbar': dict(title="Settlement (id)")},
+            #layout_kwargs=layout_dict)
+            #                              )
+             #             )
 
         print('Number of Households: ' + str(len(model.environment.getAgents())))
         print('Number of Settlements: ' + str(len(model.environment[SettlementRelationshipComponent].settlements)))
