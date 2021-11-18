@@ -3,55 +3,22 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def generateAnimat(records: [[float]], fps: int = 1, vmin=0, vmax=255, generate_gif: bool = False, filename: str = 'animat'):
+def generateAnimat(title: str, records: [[float]], fps: int = 1, vmin=0, vmax=255, filename: str = 'animat',
+                   x_label: str = 'X', y_label: str = 'Y'):
 
-	fig, ax = plt.subplots()
+    fig, ax = plt.subplots()
 
-	def animate(i):
+    def animate(i):
 
-		ax.set_xlabel('X')
-		ax.set_ylabel('Y')
+        ax.set_title(title)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(y_label)
 
-		# Generate the pix map
-		ax.imshow(records[i], interpolation='none', cmap='jet', vmin=vmin, vmax=vmax)
+        # Generate the pix map
+        plot = ax.imshow(records[i], interpolation='none', cmap='jet', vmin=vmin, vmax=vmax)
 
-	blocks = amp.blocks.Nuke(animate, length=len(records), ax=ax) # Required call to build our animation
-	timeline = np.arange(len(records))
-	anim = amp.Animation([blocks], amp.Timeline(timeline, fps=fps))  # Builds the Animation
-	anim.controls()  # Gives us a pause and start button
-	
-	if generate_gif:  # Write animation to file if generate_gif is True
-		anim.save_gif(filename)
-
-	return anim, fig, ax
-
-
-if __name__ == '__main__':
-
-	infile = "./model_faiyum_1000_3.dat"
-	outfile = "./resources/house_movement_faiyum_1000_phouse"
-
-	height = 250
-	width = 150
-
-	records = []
-
-
-	with open(infile, 'r') as f:
-		for line in [l.rstrip() for l in f.readlines()]:
-
-			splitData = [int(data) for data in line.split(' ')]
-			record = []
-			counter = 0
-			for h in range(height):
-				row = []
-				for w in range(width):
-					row.append(splitData[counter])
-					counter += 1
-
-				record.append(row)
-
-			records.append(record)
-
-	generateAnimat(records, vmin=-1, vmax=2, fps=10, filename=outfile, generate_gif=True)
-
+    blocks = amp.blocks.Nuke(animate, length=len(records), ax=ax)  # Required call to build our animation
+    timeline = np.arange(len(records))
+    anim = amp.Animation([blocks], amp.Timeline(timeline, fps=fps))  # Builds the Animation
+    anim.controls()
+    anim.save_gif(filename)
