@@ -1,3 +1,4 @@
+Cython
 matplotlib
 pandas
 dash

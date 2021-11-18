@@ -9,6 +9,9 @@ venv :
 profile: venv
 	. venv/bin/activate; python -m vmprof ./src/main.py
 
+compile:
+	. venv/bin/activate; python setup.py build_ext --inplace
+
 clean:
 	rm -rf venv
 	find -iname "*.pyc" -delete
