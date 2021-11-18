@@ -6,6 +6,12 @@ from ECAgent.Environments import *
 from ECAgent.Decode import *
 from ECAgent.Collectors import Collector
 
+from main import EgyptModel
+from Logging import ILoggable
+
+# Cython Modules
+from CythonFunctions import CSoilMoistureSystemFunctions, CVegetationGrowthSystemFunctions, CGlobalEnvironmentCurves
+
 
 def lerp(start, end, percentage):
     return start + (end - start) * percentage
@@ -30,6 +36,10 @@ class GlobalEnvironmentComponent(Component):
         self.rainfall = []
         self.flood = -1
 
+        # For easier streaming of objects in memory
+        del self.model
+        del self.agent
+
 
 class SoilMoistureComponent(Component):
 
@@ -39,6 +49,7 @@ class SoilMoistureComponent(Component):
         self.L = L
         self.N = N
         self.I = I  # Heat Index
+        self.alpha = (0.000000675 * I * I * I) - (0.0000771 * I * I) - (0.01792 * I) + 0.49239
 
         # Get avg water cell height
         isWaterArr = model.environment.cells['isWater'].tolist()
@@ -88,8 +99,9 @@ class SoilMoistureComponent(Component):
                     if self.avg_water_heights[i] != 0.0:
                         has_changes = True
 
-        #if self.model.debug:
-            #print(self.avg_water_heights)
+        # For streaming processes
+        del self.model
+        del self.agent
 
     def avgWaterHeight(self, pos: (int, int)):
         return self.avg_water_heights[discreteGridPosToID(pos[0] // self.flood_cell_divide,
@@ -108,13 +120,26 @@ class VegetationGrowthComponent(Component):
         self.decay_rate = decay_rate
         self.ideal_moisture = ideal_moisture
 
+        # For Streaming Purposes
+        del self.model
+        del self.agent
 
-class GlobalEnvironmentSystem(System, IDecodable):
+
+class GlobalEnvironmentSystem(System, IDecodable, ILoggable):
 
     def __init__(self, id: str, model: Model, start_temp: [int], end_temp: [int], start_rainfall: [int],
                  end_rainfall: [int], start_flood: [int], end_flood: [int], soil_depth: float,
+                 temperature_dict: dict, rainfall_dict: dict, flood_dict: dict, interpolater_range: int,
                  priority=0, frequency=1, start=0, end=maxsize):
-        super().__init__(id, model, priority, frequency, start, end)
+
+        System.__init__(self,id, model, priority, frequency, start, end)
+        IDecodable.__init__(self)
+        ILoggable.__init__(self, 'model.GES')
+
+        self.temperature_dict = temperature_dict
+        self.rainfall_dict = rainfall_dict
+        self.flood_dict = flood_dict
+        self.interpolator_range = interpolater_range
 
         model.environment.addComponent(GlobalEnvironmentComponent(model.environment, model, start_temp, end_temp,
                                                                   start_rainfall, end_rainfall, start_flood, end_flood,
@@ -124,34 +149,56 @@ class GlobalEnvironmentSystem(System, IDecodable):
     def decode(params: dict):
         return GlobalEnvironmentSystem(params['id'], params['model'], params['start_temp'], params['end_temp'],
                                        params['start_rainfall'], params['end_rainfall'], params['start_flood'],
-                                       params['end_flood'], params['soil_depth'], priority=params['priority'])
+                                       params['end_flood'], params['soil_depth'], params['temperature_dict'],
+                                       params['rainfall_dict'], params['flood_dict'], params['interpolator_range'],
+                                       priority=params['priority'])
 
     @staticmethod
-    def calcMinMaxGlobalVals(startArr, endArr, percentage):
-        min = lerp(startArr[0], endArr[0], percentage)
-        max = lerp(startArr[1], endArr[1], percentage)
+    def calcMinMaxGlobalVals(startArr, endArr, percentage, func_dict: dict):
+
+        if func_dict['id'] == 'cosine':
+            min = CGlobalEnvironmentCurves.cosine_lerp(startArr[0], endArr[0], percentage, func_dict['frequency'])
+            max = CGlobalEnvironmentCurves.cosine_lerp(startArr[1], endArr[1], percentage, func_dict['frequency'])
+        elif func_dict['id'] == 'exponential':
+            min = CGlobalEnvironmentCurves.exponential_lerp(startArr[0], endArr[0], percentage, func_dict['k'])
+            max = CGlobalEnvironmentCurves.exponential_lerp(startArr[0], endArr[0], percentage, func_dict['k'])
+        elif func_dict['id'] == 'dampened_sinusoidal':
+            min = CGlobalEnvironmentCurves.dampening_sinusoidal_lerp(startArr[0], endArr[0], percentage,
+                                                                     func_dict['frequency'], func_dict['k'])
+            max = CGlobalEnvironmentCurves.dampening_sinusoidal_lerp(startArr[0], endArr[0], percentage,
+                                                                     func_dict['frequency'], func_dict['k'])
+        elif func_dict['id'] == 'linear_dampened_sinusoidal':
+            min = CGlobalEnvironmentCurves.linear_modified_dsinusoidal_lerp(startArr[0], endArr[0], percentage,
+                                                     func_dict['frequency'], func_dict['k'], func_dict['m'])
+            max = CGlobalEnvironmentCurves.linear_modified_dsinusoidal_lerp(startArr[0], endArr[0], percentage,
+                                                     func_dict['frequency'], func_dict['k'], func_dict['m'])
+        else:
+            min = CGlobalEnvironmentCurves.linear_lerp(startArr[0], endArr[0], percentage)
+            max = CGlobalEnvironmentCurves.linear_lerp(startArr[1], endArr[1], percentage)
+
         return min, max
 
     def execute(self):
 
-        if self.model.debug:
-            print("Generating Global Data Variables...")
+        logging.debug("Generating Global Data Variables...")
 
         env_comp = self.model.environment.getComponent(GlobalEnvironmentComponent)
 
         env_comp.temp.clear()
         env_comp.rainfall.clear()
 
-        percentage = (self.model.systemManager.timestep * 1.0)/self.model.iterations
+        percentage = min(self.model.systemManager.timestep / self.interpolator_range, 1.0)
 
-        min_t, max_t = GlobalEnvironmentSystem.calcMinMaxGlobalVals(env_comp.start_temp, env_comp.end_temp, percentage)
+        # Set Temperature
+        min_t, max_t = GlobalEnvironmentSystem.calcMinMaxGlobalVals(env_comp.start_temp, env_comp.end_temp, percentage,
+                                                                    self.temperature_dict)
 
         # Set Rainfall
         min_r, max_r = GlobalEnvironmentSystem.calcMinMaxGlobalVals(env_comp.start_rainfall, env_comp.end_rainfall,
-                                                                    percentage)
+                                                                    percentage, self.rainfall_dict)
         # Set Flooding
         min_f, max_f = GlobalEnvironmentSystem.calcMinMaxGlobalVals(env_comp.start_flood, env_comp.end_flood,
-                                                                    percentage)
+                                                                    percentage, self.flood_dict)
         env_comp.flood = self.model.random.uniform(min_f, max_f)
 
         for i in range(12):
@@ -159,16 +206,15 @@ class GlobalEnvironmentSystem(System, IDecodable):
             env_comp.temp.append(self.model.random.uniform(min_t, max_t))
             env_comp.rainfall.append(self.model.random.uniform(min_r, max_r))
 
-        if self.model.debug:
-            print('Global_Properties:\n\n%: {}\nAvg River Height: {}\nTemperatures: {}C\nRainfall: {}mm\nFlood: {}m\n'
-                  .format(percentage * 100, self.model.environment.getComponent(SoilMoistureComponent).avg_water_heights,
-                          self.model.environment.getComponent(GlobalEnvironmentComponent).temp,
-                          self.model.environment.getComponent(GlobalEnvironmentComponent).rainfall,
-                          self.model.environment.getComponent(GlobalEnvironmentComponent).flood))
+        logging.debug(self)
+        self.logger.info('GES:  {} {} {}'.format(
+            str(np.mean(self.model.environment.getComponent(GlobalEnvironmentComponent).temp)),
+            str(np.mean(self.model.environment.getComponent(GlobalEnvironmentComponent).rainfall)),
+            str(self.model.environment.getComponent(GlobalEnvironmentComponent).flood)
+        ))
 
     def __str__(self):
-        return 'Global_Properties:\n\nAvg River Height: {}\nTemperatures: {}C\nRainfall: {}mm\nFlood: {}m\n'.format(
-            self.model.environment.getComponent(SoilMoistureComponent).avg_water_heights,
+        return 'Global_Properties:\n\nTemperatures: {}C\nRainfall: {}mm\nFlood: {}m\n'.format(
             self.model.environment.getComponent(GlobalEnvironmentComponent).temp,
             self.model.environment.getComponent(GlobalEnvironmentComponent).rainfall,
             self.model.environment.getComponent(GlobalEnvironmentComponent).flood)
@@ -184,8 +230,8 @@ class SoilMoistureSystem(System, IDecodable):
 
         def moisture_generator(pos, cells):
             cellID = discreteGridPosToID(pos[0], pos[1], model.environment.width)
-            return SoilMoistureSystem.wfc(model.environment.getComponent(GlobalEnvironmentComponent).soil_depth,
-                   cells['sand_content'][cellID]) * min(1.0,
+            return 0.0 if cells['isWater'][cellID] else SoilMoistureSystem.wfc(model.environment.getComponent(GlobalEnvironmentComponent
+                                                                            ).soil_depth, cells['sand_content'][cellID]) * min(1.0,
                         math.pow(cells['height'][cellID] / model.environment.getComponent(SoilMoistureComponent).avgWaterHeight(pos), 2))
 
         model.environment.addCellComponent('moisture', moisture_generator)
@@ -199,8 +245,8 @@ class SoilMoistureSystem(System, IDecodable):
                                   params['flood_cell_divide'], priority=params['priority'])
 
     @staticmethod
-    def thornthwaite(day_length : int, days: int, avg_temp: int, heat_index : float):
-        return 16 * (day_length/12) * (days/30) * (10*avg_temp/heat_index)
+    def thornthwaite(day_length : int, days: int, avg_temp: int, heat_index : float, alpha: float):
+        return 16 * (day_length/12) * (days/30) * math.pow(10*avg_temp/heat_index, alpha)
 
     @staticmethod
     def calcRdr(sand_content, soil_m, soil_depth):
@@ -224,13 +270,6 @@ class SoilMoistureSystem(System, IDecodable):
     def wfc(soil_depth, sand_content):
         return soil_depth * lerp(0.3, 0.7, 1 - (sand_content/100.0))
 
-
-    def is_flooded(self, unq_id: int):
-        sm_comp = self.model.environment.getComponent(SoilMoistureComponent)
-        global_env_comp = self.model.environment.getComponent(GlobalEnvironmentComponent)
-
-        return self.model.environment.cells['height'][unq_id] < global_env_comp.flood + sm_comp.avgWaterHeight(self.model.environment.cells['pos'][unq_id])
-
     def get_soil_moisture(self, unq_id: int):
         sm_comp = self.model.environment.getComponent(SoilMoistureComponent)
         global_env_comp = self.model.environment.getComponent(GlobalEnvironmentComponent)
@@ -240,64 +279,59 @@ class SoilMoistureSystem(System, IDecodable):
         else:
             return self.model.environment.cells['moisture'][unq_id]
 
-    def set_soil_moisture(self, unq_id: int, val: float):
+    @staticmethod
+    def is_flooded(height, pos, sm_comp, global_env_comp):
+        return height < global_env_comp.flood + sm_comp.avgWaterHeight(pos)
 
-        if not self.is_flooded(unq_id):
-            self.model.environment.cells.at[unq_id, 'moisture'] = val
+    @staticmethod
+    def SMProcess(df, sm_comp, global_env_comp) -> [float]:
+
+        soil_vals = df['moisture'].to_numpy()
+        for row in df.itertuples():
+            if row.isWater:
+                continue
+
+            if SoilMoistureSystem.is_flooded(row.height, row.pos, sm_comp, global_env_comp):
+                soil_vals[row.Index] = CSoilMoistureSystemFunctions.wfc(global_env_comp.soil_depth, row.sand_content)
+                continue
+
+            for i in range(12):
+                PET = CSoilMoistureSystemFunctions.thornthwaite(
+                    sm_comp.L, sm_comp.N, global_env_comp.temp[i], sm_comp.I, sm_comp.alpha)
+
+                if PET > global_env_comp.rainfall[i]:
+                    rdr = CSoilMoistureSystemFunctions.calcRdr(row.sand_content,
+                                       soil_vals[row.Index] + global_env_comp.rainfall[i], global_env_comp.soil_depth)
+                    moisture = soil_vals[row[0]] - (PET - global_env_comp.rainfall[i]) * rdr
+                    soil_vals[row.Index] = moisture if moisture > 0 else 0
+
+                else:
+                    wfc = CSoilMoistureSystemFunctions.wfc(global_env_comp.soil_depth, row.sand_content)
+
+                    moisture = soil_vals[row.Index] + (
+                                global_env_comp.rainfall[i] - PET)
+                    soil_vals[row.Index] = moisture if moisture < wfc else wfc
+
+        return soil_vals
 
     def execute(self):
 
-        sm_comp = self.model.environment.getComponent(SoilMoistureComponent)
-        global_env_comp = self.model.environment.getComponent(GlobalEnvironmentComponent)
+        if EgyptModel.pool is None:
+            outputs = [CSoilMoistureSystemFunctions.SMProcess(self.model.environment.cells,
+                                                  self.model.environment[SoilMoistureComponent],
+                                                  self.model.environment[GlobalEnvironmentComponent])]
+        else:
 
-        soilVals = self.model.environment.cells['moisture'].tolist()
+            dfs = np.array_split(self.model.environment.cells[['pos', 'height','moisture', 'isWater', 'sand_content']],
+                                 self.model.pool_count)
+            sm_comp = [self.model.environment[SoilMoistureComponent] for i in range(self.model.pool_count)]
+            gec = [self.model.environment[GlobalEnvironmentComponent] for i in range(self.model.pool_count)]
 
-        for x in range(self.model.environment.width):
-            for y in range(self.model.environment.height):
+            outputs = EgyptModel.pool.starmap(CSoilMoistureSystemFunctions.SMProcess, zip(dfs, sm_comp, gec))
 
-                cellID = discreteGridPosToID(x, y, self.model.environment.width)
+        final_list = np.concatenate(outputs)
 
-                if self.model.environment.cells['isWater'][cellID]:
-                    continue
-
-                if self.is_flooded(cellID):
-                    soilVals[cellID] = SoilMoistureSystem.wfc(global_env_comp.soil_depth,
-                                                              self.model.environment.cells['sand_content'][cellID])
-                    continue
-
-                for i in range(12):
-                    PET = SoilMoistureSystem.thornthwaite(sm_comp.L, sm_comp.N, global_env_comp.temp[i], sm_comp.I)
-
-                    if PET > global_env_comp.rainfall[i]:
-                        rdr = SoilMoistureSystem.calcRdr(self.model.environment.cells['sand_content'][cellID],
-                                                         soilVals[cellID] + global_env_comp.rainfall[i],
-                                                         global_env_comp.soil_depth)
-                        moisture = soilVals[cellID] - (PET - global_env_comp.rainfall[i]) * rdr
-                        soilVals[cellID] = moisture if moisture > 0 else 0
-
-                    else:
-                        wfc = SoilMoistureSystem.wfc(global_env_comp.soil_depth,
-                                                     self.model.environment.cells['sand_content'][cellID])
-
-                        moisture = self.model.environment.cells['moisture'][cellID] + (global_env_comp.rainfall[i] - PET)
-                        soilVals[cellID] = moisture if moisture < wfc else wfc
-
-        self.model.environment.cells.update({'moisture': soilVals})
-
-        if self.model.debug:
-            sum = 0.0
-            for x in range(self.model.environment.width):
-                for y in range(self.model.environment.height):
-                    cellID = discreteGridPosToID(x, y, self.model.environment.width)
-                    sum += self.model.environment.cells['moisture'][cellID]
-
-            avg_PET = np.mean([SoilMoistureSystem.thornthwaite(sm_comp.L, sm_comp.N, global_env_comp.temp[i], sm_comp.I) for i in range(12)])
-
-            avg = np.mean(self.model.environment.cells['moisture'])
-            variance = np.std(self.model.environment.cells['moisture'])
-            print('PET: {} Mean Moisture: {} std: {} Delta: {}'.format(avg_PET, avg, variance,
-                                                                       avg - self.lastAvgMoisture))
-            self.lastAvgMoisture = avg
+        self.model.environment.cells.update({'moisture': final_list})
 
 
 class VegetationGrowthSystem(System, IDecodable):
@@ -315,7 +349,8 @@ class VegetationGrowthSystem(System, IDecodable):
         min_carry = max(0, int(init_pop - (init_pop * init_pop/carry_pop)))
 
         def vegetation_generator(pos, cells):
-            return self.model.random.uniform(min_carry, max_carry)
+            cellID = discreteGridPosToID(pos[0], pos[1], model.environment.width)
+            return 0.0 if cells['isWater'][cellID] else self.model.random.uniform(min_carry, max_carry)
 
         model.environment.addCellComponent('vegetation', vegetation_generator)
 
@@ -342,62 +377,95 @@ class VegetationGrowthSystem(System, IDecodable):
         return -0.0005 * math.pow(temp - 20.0, 2) + 1
 
     @staticmethod
-    def tempPenalty(temperature: float, model : Model):
+    def tempPenalty(temperature: float, random):
         topt = VegetationGrowthSystem.tOpt(temperature)
-        return model.random.uniform(0.8 - 0.0005 * math.pow(topt, 2), 0.8 + 0.02 * topt)
+        return random.uniform(0.8 - 0.0005 * math.pow(topt, 2), 0.8 + 0.02 * topt)
+
+    @staticmethod
+    def VGProcess(df, vg_comp, sm_comp, ge_comp, random) -> ([float], [float]):
+
+        veg_cells = df['vegetation'].to_numpy()
+        moist_cells = df['moisture'].to_numpy()
+
+        cell_len = len(veg_cells) - 1
+
+        for row in df.itertuples():
+
+            if row.isWater or row.isOwned != -1:
+                continue
+
+            # Check for cell refill given neighbour's vegetation density
+            if veg_cells[row.Index] < 1.0:
+                means = []
+                if row.Index != 0:
+                    means.append(veg_cells[row.Index - 1])
+                if row.Index < cell_len:
+                    means.append(veg_cells[row.Index + 1])
+
+                mean = np.mean(means)
+                ratio = mean / vg_comp.carry_pop
+                if random.random() < ratio:
+                    veg_cells[row.Index] = mean
+
+            else:
+                capacity_ratio = veg_cells[row.Index] / vg_comp.carry_pop
+
+                if SoilMoistureSystem.is_flooded(row.height, row.pos, sm_comp, ge_comp):
+                    r = 1.0
+                else:
+                    r, moist_cells[row.Index] = CVegetationGrowthSystemFunctions.waterPenalty(moist_cells[row.Index],
+                                                                              vg_comp.ideal_moisture, capacity_ratio)
+
+                r *= CVegetationGrowthSystemFunctions.tempPenalty(np.mean(ge_comp.temp), random)
+                veg_cells[row.Index] -= CVegetationGrowthSystemFunctions.decay(veg_cells[row.Index], vg_comp.decay_rate)
+                veg_cells[row.Index] += CVegetationGrowthSystemFunctions.Logistic_Growth(veg_cells[row.Index],
+                                                                         vg_comp.carry_pop * r, vg_comp.growth_rate)
+
+        return veg_cells, moist_cells
 
     def execute(self):
 
-        veg_vals = self.model.environment.cells['vegetation'].tolist()
-        soil_vals = self.model.environment.cells['moisture'].tolist()
+        if EgyptModel.pool is None:
+            outputs = [CVegetationGrowthSystemFunctions.VGProcess(self.model.environment.cells,
+                                                        self.model.environment[VegetationGrowthComponent],
+                                                        self.model.environment[SoilMoistureComponent],
+                                                        self.model.environment[GlobalEnvironmentComponent],
+                                                        self.model.random)]
+        else:
 
-        vg_comp = self.model.environment.getComponent(VegetationGrowthComponent)
+            dfs = []
+            vg_comp = []
+            sm_comp = []
+            gec = []
+            randoms = []
 
-        for x in range(self.model.environment.width):
-            for y in range(self.model.environment.height):
+            edge = self.model.environment.width * self.model.environment.height
+            division = edge // self.model.pool_count
 
-                cellID = discreteGridPosToID(x, y, self.model.environment.width)
+            sub_df = self.model.environment.cells[['pos', 'height', 'moisture', 'isWater', 'vegetation', 'isOwned']]
 
-                if self.model.environment.cells['isWater'][cellID] or self.model.environment.cells['isOwned'][cellID] != -1:
-                    continue
+            for t in range(self.model.pool_count):
+                t_min = division * t
+                t_max = division * (t + 1) if t + 1 != self.model.pool_count else edge
 
-                # Check for cell refill given neighbour's vegetation density
-                if veg_vals[cellID] < 1.0:
-                    veg_sum = 0.0
-                    count = 0
-                    for neighbour in self.model.environment.getNeighbours(self.model.environment.cells['pos'][cellID]):
-                        veg_sum += veg_vals[neighbour]
-                        count += 1
+                dfs.append(dfs.append(sub_df.iloc[t_min:t_max]))
+                vg_comp.append(self.model.environment[VegetationGrowthComponent])
+                sm_comp.append(self.model.environment[SoilMoistureComponent])
+                gec.append(self.model.environment[GlobalEnvironmentComponent])
+                randoms.append(self.model.random)
 
-                    veg_avg = veg_sum/count
-                    if self.model.random.random() < veg_avg/self.model.environment.getComponent(VegetationGrowthComponent).carry_pop:
-                        veg_vals[cellID] = veg_avg
+            outputs = EgyptModel.pool.starmap(CVegetationGrowthSystemFunctions.VGProcess,
+                                              zip(dfs, vg_comp, sm_comp, gec, randoms))
 
-                else:
-                    capacity_ratio = veg_vals[cellID]/self.model.environment.getComponent(
-                        VegetationGrowthComponent).carry_pop
+        final_veg_list = np.concatenate([o[0] for o in outputs])
+        final_soil_list = np.concatenate([o[1] for o in outputs])
 
-                    if self.model.systemManager.systems['SMS'].is_flooded(cellID):
-                        r = 1.0
-                    else:
-                        r, soil_vals[cellID] = VegetationGrowthSystem.waterPenalty(soil_vals[cellID],
-                                                                           self.model.environment.getComponent(
-                                                                               VegetationGrowthComponent
-                                                                           ).ideal_moisture, capacity_ratio)
+        self.model.environment.cells.update({'moisture': final_soil_list,
+                                             'vegetation': final_veg_list})
 
-                    r *= VegetationGrowthSystem.tempPenalty(
-                        np.mean(self.model.environment.getComponent(GlobalEnvironmentComponent).temp), self.model
-                    )
-                    veg_vals[cellID] -= VegetationGrowthSystem.decay(veg_vals[cellID], vg_comp.decay_rate)
-                    veg_vals[cellID] += VegetationGrowthSystem.Logistic_Growth(veg_vals[cellID], vg_comp.carry_pop * r,
-                                                                           vg_comp.growth_rate)
-
-        self.model.environment.cells.update({'moisture': soil_vals, 'vegetation': veg_vals})
-
-        if self.model.debug:
-            print('...Vegetation System...')
-            print('Vegetation: {} Mean Moisture: {}'.format(np.mean(self.model.environment.cells['vegetation']),
-                                                            np.mean(self.model.environment.cells['moisture'])))
+        logging.debug('...Vegetation System...')
+        logging.debug('Vegetation: {} Mean Moisture: {}'.format(np.mean(self.model.environment.cells['vegetation']),
+                                                        np.mean(self.model.environment.cells['moisture'])))
 
     @staticmethod
     def decode(params: dict):
@@ -461,3 +529,17 @@ class VegetationCollector(Collector, IDecodable):
     @staticmethod
     def decode(params: dict):
         return VegetationCollector(params['id'], params['model'])
+
+
+class VegetationSnapshotCollector(Collector):
+
+    def __init__(self, id: str, model, file_name, frequency: int = 1):
+        super().__init__(id, model, frequency=frequency)
+
+        self.file_name = file_name
+        self.headers = ['moisture', 'vegetation', 'isOwned', 'isSettlement']
+
+    def collect(self):
+        self.model.environment.cells.to_csv(self.file_name + '/iteration_{}.csv'.format(self.model.systemManager.timestep),
+                                 mode='w', index=True, header=True, columns=self.headers)
+

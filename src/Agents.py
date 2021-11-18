@@ -1,11 +1,18 @@
-import VegetationModel as VM
+import VegetationModel
 import math
 import numpy as np
+import json
 
 from ECAgent.Core import *
 from ECAgent.Decode import IDecodable
 from ECAgent.Environments import PositionComponent, discreteGridPosToID
 from ECAgent.Collectors import Collector, FileCollector
+from VegetationModel import VegetationGrowthSystem, SoilMoistureSystem, SoilMoistureComponent, GlobalEnvironmentComponent
+
+from Logging import ILoggable
+
+# Cython Functions
+from CythonFunctions import CAgentResourceConsumptionSystemFunctions, CAgentResourceAcquisitionFunctions, CVegetationGrowthSystemFunctions
 
 
 class Individual:
@@ -79,7 +86,7 @@ class HouseholdRelationshipComponent(Component):
     def is_auth(self, h):
         """Returns true if household self has an authority relationship over household h"""
 
-        if h is self or self.load == 0:
+        if h is self.agent or self.load == 0:
             return False
 
         h_load = h[HouseholdRelationshipComponent].load
@@ -88,7 +95,7 @@ class HouseholdRelationshipComponent(Component):
     def is_peer(self, h):
         """Returns true if household self has a peer relationship with household h"""
 
-        if h is self:
+        if h is self.agent or self.is_auth(h):
             return False
 
         h_load = h[HouseholdRelationshipComponent].load
@@ -143,6 +150,22 @@ class Household(Agent, IDecodable):
         return 'Household {}:\n\tOccupants: {}\n\tResources: {}\n\tLoad: {}'.format(
             self.id, len(self[ResourceComponent].occupants), self[ResourceComponent].resources, self[HouseholdRelationshipComponent].load)
 
+    def jsonify(self) -> dict:
+        created_dict = {}
+        created_dict['id'] = self.id
+
+        created_dict['occupants'] = len(self[ResourceComponent].occupants)
+        created_dict['able_workers'] = self[ResourceComponent].able_workers()
+        created_dict['resources'] = self[ResourceComponent].resources
+        created_dict['hunger'] = self[ResourceComponent].hunger
+        created_dict['satisfaction'] = self[ResourceComponent].satisfaction
+        created_dict['owned_land'] = self[ResourceComponent].ownedLand
+
+        created_dict['settlement_id'] = self[HouseholdRelationshipComponent].settlementID
+        created_dict['load'] = self[HouseholdRelationshipComponent].load
+
+        return created_dict
+
 
 class PreferenceHousehold(Household):
 
@@ -173,12 +196,29 @@ class PreferenceHousehold(Household):
         return super().__str__() + '\n\tFarming Preference(f/F): ({}, {})'.format(
             self[HouseholdPreferenceComponent].forage_utility, self[HouseholdPreferenceComponent].farm_utility)
 
+    def jsonify(self) -> dict:
+        created_dict = super().jsonify()
+
+        created_dict['forage_utility'] = self[HouseholdPreferenceComponent].forage_utility
+        created_dict['farm_utility'] = self[HouseholdPreferenceComponent].farm_utility
+        created_dict['prev_hunger'] = self[HouseholdPreferenceComponent].prev_hunger
+        created_dict['learning_rate'] = self[HouseholdPreferenceComponent].learning_rate
+
+        return created_dict
+
 
 class Settlement:
     def __init__(self, id):
         self.id = id
         self.pos = []
         self.occupants = []
+
+    def jsonify(self):
+        return {
+            'id': self.id,
+            'pos': self.pos,
+            'occupants': self.occupants
+        }
 
 
 class SettlementRelationshipComponent(Component):
@@ -253,6 +293,26 @@ class SettlementRelationshipComponent(Component):
     def getSettlementWealth(self, settlementID):
         return sum([self.model.environment.getAgent(h)[ResourceComponent].resources for h in self.settlements[settlementID].occupants])
 
+    def getSettlementLoad(self, settlementID):
+        return sum([self.model.environment.getAgent(h)[HouseholdRelationshipComponent].load for h in
+                    self.settlements[settlementID].occupants])
+
+    def getSettlementPopulation(self, settlementID):
+        return sum([len(self.model.environment.getAgent(h)[ResourceComponent].occupants) for h in
+                    self.settlements[settlementID].occupants])
+
+    def getSettlementFarmUtility(self, settlementID):
+        return sum([self.model.environment.getAgent(h)[HouseholdPreferenceComponent].farm_utility for h in
+                    self.settlements[settlementID].occupants
+                   if self.model.environment.getAgent(h).hasComponent(HouseholdPreferenceComponent)]
+                   ) / len(self.settlements[settlementID].occupants)
+
+    def getSettlementForageUtility(self, settlementID):
+        return sum([self.model.environment.getAgent(h)[HouseholdPreferenceComponent].forage_utility for h in
+                    self.settlements[settlementID].occupants
+                   if self.model.environment.getAgent(h).hasComponent(HouseholdPreferenceComponent)]
+                   ) / len(self.settlements[settlementID].occupants)
+
     def getAverageSettlementWealth(self, settlementID):
         return self.getSettlementWealth(settlementID) / len(self.settlements[settlementID].occupants)
 
@@ -281,16 +341,16 @@ class SettlementRelationshipComponent(Component):
                 if self.model.environment.getAgent(x)[HouseholdRelationshipComponent].is_peer(h)]
 
 
-class AgentResourceAcquisitionSystem(System, IDecodable):
+class AgentResourceAcquisitionSystem(System, IDecodable, ILoggable):
 
     farms_per_patch = 0
     land_buffer = 0
-    max_acquisition_distance = 0.0
+    max_acquisition_distance = 0
 
-    moisture_consumption_rate = 0.0
+    moisture_consumption_rate = 0
     crop_gestation_period = 0
-    farming_production_rate = 0.0
-    forage_consumption_rate = 0.0
+    farming_production_rate = 0
+    forage_consumption_rate = 0
     forage_production_multiplier = 0.0
 
     @staticmethod
@@ -308,18 +368,49 @@ class AgentResourceAcquisitionSystem(System, IDecodable):
 
     def __init__(self, id: str, model: Model,priority):
 
-        super().__init__(id, model, priority=priority)
+        System.__init__(self, id, model, priority=priority)
+        IDecodable.__init__(self)
+        ILoggable.__init__(self, 'model.RAS')
 
         def owned_generator(pos, cells):
             return -1
 
         model.environment.addCellComponent('isOwned', owned_generator)
 
-    def acquire_land(self, household: Household, target: int):
+    @staticmethod
+    def num_to_farm(threshold, maxFarm, random):
+        numToFarm = 0
+        for index in range(maxFarm):
+            if random.random() < threshold:
+                numToFarm += 1
+        return numToFarm
+
+    @staticmethod
+    def num_to_farm_phouse(threshold, maxFarm, random, farm_utility, forage_utility):
+        numToFarm = 0
+        for index in range(maxFarm):
+            is_farm_max = farm_utility > forage_utility
+            # A satisfied house has a hunger of 1.0
+            if random.random() < threshold:
+                if is_farm_max:
+                    numToFarm += 1
+            else:
+                numToFarm += random.randint(0, 1)
+
+        return numToFarm
+
+    @staticmethod
+    def generateNeighbours(xPos, yPos, width, height, radius):
+        toReturn = []
+        for x in range(max(xPos - radius, 0), min(xPos + radius, width)):
+            for y in range(max(yPos - radius, 0), min(yPos + radius, height)):
+                toReturn.append(discreteGridPosToID(x, y, width))
+        return toReturn
+
+    def acquire_land(self, household: Household, target: int, owned_cells):
         new_land = int(target * AgentResourceAcquisitionSystem.land_buffer) - len(household[ResourceComponent].ownedLand)
 
         # Get a list of all the available patches of land
-        own_cells = self.model.environment.cells['isOwned']
 
         available_land = []
         past_iter = 0
@@ -327,7 +418,7 @@ class AgentResourceAcquisitionSystem(System, IDecodable):
             for land_id in household[ResourceComponent].ownedLand:
 
                 available_land +=[x for x in self.model.environment.getNeighbours(self.model.environment.cells['pos'][land_id])
-                    if x not in available_land and own_cells[x] == -1 and not self.model.environment.cells['isWater'][x]
+                    if x not in available_land and owned_cells[x] == -1 and not self.model.environment.cells['isWater'][x]
                     and self.model.environment.cells['isSettlement'][x] == -1]
 
             if len(available_land) == past_iter:
@@ -339,6 +430,7 @@ class AgentResourceAcquisitionSystem(System, IDecodable):
             past_iter = len(available_land)
 
         moist_cells = self.model.environment.cells['moisture']
+
         def getMoisture(loc):
             return moist_cells[loc]
 
@@ -353,143 +445,157 @@ class AgentResourceAcquisitionSystem(System, IDecodable):
             household[ResourceComponent].claim_land(land_id)
             self.model.environment.cells.at[land_id, 'isOwned'] = household.id
 
+            self.logger.info('HOUSEHOLD.CLAIM: {} {}'.format(household.id, land_id))
+
         # If we did not allocate enough land we can call the function again
         if len(household[ResourceComponent].ownedLand) < target:
             self.acquire_land(household, target)
 
-    def farm(self, patch_id, workers, house_pos: (int, int)):
+    @staticmethod
+    def farm(patch_id: int, workers: int, house_pos: (int, int), coords: (int, int), temperature: float, max_acquisition_distance,
+             moisture_consumption_rate, crop_gestation_period, farming_production_rate, farms_per_patch,
+             height_cells, moisture_cells, sm_comp, ge_comp, random) -> float:
         # Calculate penalties
 
-        coords = self.model.environment.cells['pos'][patch_id]
-
         dst = max(abs(coords[0] - house_pos[0]), abs(coords[1] - house_pos[1]))
-        dst_penalty = 1.0 if dst <= AgentResourceAcquisitionSystem.max_acquisition_distance else 1.0 / (dst-AgentResourceAcquisitionSystem.max_acquisition_distance)
+        dst_penalty = 1.0 if dst <= max_acquisition_distance else 1.0 / (dst - max_acquisition_distance)
 
-        tmp_Penalty = VM.VegetationGrowthSystem.tempPenalty(
-            sum(self.model.environment.getComponent(VM.GlobalEnvironmentComponent).temp)/12.0, self.model
-        )
-        wtr_penalty, moisture_remain = VM.VegetationGrowthSystem.waterPenalty(self.model.environment.cells['moisture'][patch_id],
-            AgentResourceAcquisitionSystem.moisture_consumption_rate/AgentResourceAcquisitionSystem.crop_gestation_period, 1.0)
+        tmp_Penalty = CVegetationGrowthSystemFunctions.tempPenalty(temperature, random)
+
+        wtr_penalty, moisture_remain = CVegetationGrowthSystemFunctions.waterPenalty(moisture_cells[patch_id],
+                                        moisture_consumption_rate/crop_gestation_period, 1.0)
         # Calculate Crop Yield
 
-        if self.model.systemManager.systems['SMS'].is_flooded(patch_id):
+        if SoilMoistureSystem.is_flooded(height_cells[patch_id], coords, sm_comp, ge_comp):
             wtr_penalty = 1.0
+        else:
+            # Adjust soil moisture if cell not flooded
+            moisture_cells[patch_id] = moisture_remain
 
-        crop_yield = AgentResourceAcquisitionSystem.farming_production_rate * wtr_penalty * tmp_Penalty * (workers/AgentResourceAcquisitionSystem.farms_per_patch)
-
-        # Adjust soil moisture if cell not flooded
-        if not self.model.systemManager.systems['SMS'].is_flooded(patch_id):
-            self.model.environment.cells.at[patch_id, 'moisture'] = moisture_remain
+        crop_yield = farming_production_rate * wtr_penalty * tmp_Penalty * (workers/farms_per_patch)
 
         return int(crop_yield * dst_penalty)
 
-    def forage(self, patch_id, workers) -> (int, int):
-        veg_diff = max(self.model.environment.cells['vegetation'][patch_id]
-                       - AgentResourceAcquisitionSystem.forage_consumption_rate * workers / AgentResourceAcquisitionSystem.farms_per_patch
-                       , 0.0)
-        return ((self.model.environment.cells['vegetation'][patch_id] - veg_diff) \
-                * AgentResourceAcquisitionSystem.forage_production_multiplier, veg_diff)
+    @staticmethod
+    def forage(patch_id, workers, vegetation_cells, consumption_rate, forage_multiplier, per_patch) -> float:
+        veg_diff = max(vegetation_cells[patch_id]
+                       - consumption_rate * (workers / per_patch), 0.0)
 
-    def gather_resources(self, household: Household, patch_id: int, workers: int,farm: bool) -> int:
-        if farm:
-            new_resources = self.farm(patch_id, workers, (household[PositionComponent].x, household[PositionComponent].y))
-            household[ResourceComponent].resources += new_resources
-            self.model.environment[ActionComponent].farm_count += 1
-        else:
-            new_resources, veg_diff = self.forage(patch_id, workers)
-            household[ResourceComponent].resources += new_resources
-            self.model.environment.cells.at[patch_id, 'vegetation'] = veg_diff
-            self.model.environment[ActionComponent].forage_count += 1
-
-        return new_resources
+        farmed_res = vegetation_cells[patch_id] - veg_diff
+        vegetation_cells[patch_id] = veg_diff
+        return farmed_res * forage_multiplier
 
     def execute(self):
+        # Instantiate numpy arrays of environment dataframe
+
+        owned_cells = self.model.environment.cells['isOwned'].to_numpy()
+        settlement_cells = self.model.environment.cells['isSettlement'].to_numpy()
+        water_cells = self.model.environment.cells['isWater'].to_numpy()
+        vegetation_cells = self.model.environment.cells['vegetation'].to_numpy()
+        moisture_cells = self.model.environment.cells['moisture'].to_numpy()
+        height_cells = self.model.environment.cells['height'].to_numpy()
+        position_cells = self.model.environment.cells['pos']  # Not passed to Cython so it doesn't need to be np.array
+
+        def getVegetation(location):  # Function used to sort land patches by vegetation density.
+            return vegetation_cells[location]
+
         for household in self.model.environment.getAgents():
             # Determine how many patches a household can farm
             able_workers = household[ResourceComponent].able_workers()
             max_farm = math.ceil(able_workers / AgentResourceAcquisitionSystem.farms_per_patch)
-            numToFarm = 0
-            res_before = household[ResourceComponent].resources
 
             is_phouse = household.hasComponent(HouseholdPreferenceComponent)
 
             if is_phouse:
-                farm_threshold = household[HouseholdPreferenceComponent].prev_hunger
+                farm_threshold = household[HouseholdPreferenceComponent].prev_hunger + (1 * self.model.systemManager.timestep / self.model.iterations)
 
-                for index in range(max_farm):
-                    is_farm_max = household[HouseholdPreferenceComponent].farm_utility > household[HouseholdPreferenceComponent].forage_utility
-
-                    # A satisfied house has a hunger of 1.0
-                    if self.model.random.random() > farm_threshold:
-                        if is_farm_max:
-                            numToFarm += 1
-                    else:
-                        numToFarm += self.model.random.randint(0, 1)
+                numToFarm = CAgentResourceAcquisitionFunctions.num_to_farm_phouse(farm_threshold, max_farm, self.model.random,
+                          household[HouseholdPreferenceComponent].farm_utility, household[HouseholdPreferenceComponent].forage_utility)
 
             else:
-                # TODO Allow curve specialization
-                farm_threshold = self.model.systemManager.timestep / self.model.iterations
-                for index in range(max_farm):
-                    if self.model.random.random() < farm_threshold:
-                        numToFarm +=1
+                farm_threshold = self.model.systemManager.timestep / (self.model.iterations * 0.5)
+                #farm_threshold = self.model.systemManager.timestep / self.model.iterations
+                numToFarm = CAgentResourceAcquisitionFunctions.num_to_farm(farm_threshold, max_farm, self.model.random)
 
             numToForage = max_farm - numToFarm
             hPos = (household[PositionComponent].x, household[PositionComponent].y)
 
-            foragableLand = []
-            if numToForage > 0:
-                foragableLand = [x for x in self.model.environment.getNeighbours(hPos, radius=AgentResourceAcquisitionSystem.max_acquisition_distance)
-                                 if self.model.environment.cells['isOwned'][x] == -1
-                                 and not self.model.environment.cells['isWater'][x]
-                                 and self.model.environment.cells['isSettlement'][x] == -1]
-
-                if len(foragableLand) < numToForage:
-                    numToForage = len(foragableLand)
-                    numToFarm = max_farm - numToForage
-
-            # If ownedLand < patches to farm allocate more land to farm
-            if len(household[ResourceComponent].ownedLand) < numToFarm * AgentResourceAcquisitionSystem.land_buffer:
-                self.acquire_land(household, numToFarm)
-
-            # Select land patches
-            farmableLand = [x for x in household[ResourceComponent].ownedLand]
-
-            totalFarm = 0
-            for i in range(numToFarm):
-
-                worker_diff = max(able_workers - AgentResourceAcquisitionSystem.farms_per_patch, 0)
-                workers = able_workers - worker_diff
-                able_workers = worker_diff
-
-                patchID = farmableLand.pop(self.model.random.randrange(0, len(farmableLand)))  # Remove patches of land randomly
-                totalFarm += self.gather_resources(household, patchID, workers, True)  # The choice of farming or foraging is random
-
+            # Forage numToForage Cells
             totalForage = 0
             if numToForage > 0:
 
-                vegetation_cells = self.model.environment.cells['vegetation']
+                foragableLand = CAgentResourceAcquisitionFunctions.generateNeighbours(hPos[0], hPos[1],
+                                      self.model.environment.width, self.model.environment.height,
+                                          AgentResourceAcquisitionSystem.max_acquisition_distance, owned_cells,
+                                                                                  settlement_cells, water_cells)
 
-                def getVegetation(location):
-                    return vegetation_cells[location]
+                if len(foragableLand) < numToForage:
+                    numToForage = len(foragableLand)
 
                 # Sort Foraging land by how much vegetation it has
                 foragableLand.sort(key=getVegetation, reverse=True)
 
                 # Forage these patches
-                for iForage in range(max_farm - numToFarm):
+                for iForage in range(numToForage):
                     worker_diff = max(able_workers - AgentResourceAcquisitionSystem.farms_per_patch, 0)
                     workers = able_workers - worker_diff
                     able_workers = worker_diff
 
-                    totalForage += self.gather_resources(household, foragableLand[iForage], workers, False)
+                    new_resources = CAgentResourceAcquisitionFunctions.forage(foragableLand[iForage], workers,
+                                      vegetation_cells, AgentResourceAcquisitionSystem.forage_consumption_rate,
+                                                          AgentResourceAcquisitionSystem.forage_production_multiplier,
+                                                          AgentResourceAcquisitionSystem.farms_per_patch)
+
+                    # Update Household Resources
+                    household[ResourceComponent].resources += new_resources
+                    totalForage += new_resources
+
+                    self.logger.info(
+                        'HOUSEHOLD.FORAGE: {} {} {}'.format(household.id, foragableLand[iForage], new_resources))
+
+            # Forage numToFarm Cells
+            totalFarm = 0
+            if numToFarm > 0:
+                # If ownedLand < patches to farm allocate more land to farm
+                if len(household[ResourceComponent].ownedLand) < numToFarm * AgentResourceAcquisitionSystem.land_buffer:
+                    self.acquire_land(household, numToFarm, owned_cells)
+
+                # Select land patches
+                farmableLand = [x for x in household[ResourceComponent].ownedLand]
+
+                for i in range(numToFarm):
+
+                    worker_diff = max(able_workers - AgentResourceAcquisitionSystem.farms_per_patch, 0)
+                    workers = able_workers - worker_diff
+                    able_workers = worker_diff
+
+                    # Remove patches of land randomly
+                    patchID = farmableLand.pop(self.model.random.randrange(0, len(farmableLand)))
+                    new_resources = CAgentResourceAcquisitionFunctions.farm(patchID, workers, hPos, position_cells[patchID],
+                                    sum(self.model.environment[GlobalEnvironmentComponent].temp)/12.0,
+                                    AgentResourceAcquisitionSystem.max_acquisition_distance,
+                                    AgentResourceAcquisitionSystem.moisture_consumption_rate,
+                                    AgentResourceAcquisitionSystem.crop_gestation_period,
+                                    AgentResourceAcquisitionSystem.farming_production_rate,
+                                    AgentResourceAcquisitionSystem.farms_per_patch,
+                                    height_cells, moisture_cells, self.model.environment[SoilMoistureComponent],
+                                    self.model.environment[GlobalEnvironmentComponent], self.model.random)
+
+                    household[ResourceComponent].resources += new_resources
+                    totalFarm += new_resources
+
+                    self.logger.info('HOUSEHOLD.FARM: {} {} {}'.format(household.id, patchID, new_resources))
 
             # Adjust the farm_preference based on number of resources acquired
-
-            if household.hasComponent(HouseholdPreferenceComponent):
+            if is_phouse:
                 AgentResourceAcquisitionSystem.adjust_farm_preference(household,
                                                                       totalForage + totalFarm,
                                                                       totalFarm/numToFarm if numToFarm != 0 else 0.0,
                                                                       totalForage/numToForage if numToForage != 0 else 0.0)
+
+        # Update Environment Dataframe
+        self.model.environment.cells.update({'vegetation': vegetation_cells, 'moisture': moisture_cells,
+                                             'isOwned': owned_cells})
 
     @staticmethod
     def adjust_farm_preference(household: PreferenceHousehold, acquired_resources, farm_res_avg, forage_res_avg):
@@ -506,16 +612,25 @@ class AgentResourceAcquisitionSystem(System, IDecodable):
         )
 
 
-class AgentResourceTransferSystem(System, IDecodable):
+class AgentResourceTransferSystem(System, IDecodable, ILoggable):
 
-    def __init__(self, id: str, model: Model, priority):
-        super().__init__(id, model, priority=priority)
+    def __init__(self, id: str, model: Model, priority, load_decay):
+        System.__init__(self, id, model, priority=priority)
+        IDecodable.__init__(self)
+        ILoggable.__init__(self, 'model.ARTS')
+
+        self.load_decay = load_decay
 
     @staticmethod
     def decode(params: dict):
-        return AgentResourceTransferSystem(params['id'], params['model'], params['priority'])
+        return AgentResourceTransferSystem(params['id'],params['model'], params['priority'], params['load_decay'])
 
     def execute(self):
+
+        # Decay Load
+        for h in self.model.environment.getAgents():
+            h[HouseholdRelationshipComponent].load *= self.load_decay
+
         # For each settlement:
         for settlement in [self.model.environment[SettlementRelationshipComponent].settlements[s] for s in
                            self.model.environment[SettlementRelationshipComponent].settlements]:
@@ -526,7 +641,6 @@ class AgentResourceTransferSystem(System, IDecodable):
                 if household[ResourceComponent].resources < household[ResourceComponent].required_resources():
 
                     resources_needed = household[ResourceComponent].required_resources() - household[ResourceComponent].resources
-                    loan_flag = resources_needed
                     # Get auth relationships as primary providers
                     providers = self.model.environment[SettlementRelationshipComponent].get_all_auth(household)
 
@@ -538,6 +652,14 @@ class AgentResourceTransferSystem(System, IDecodable):
 
                         resource_given = AgentResourceTransferSystem.ask_for_resources(provider, resources_needed)
                         household[ResourceComponent].resources += resource_given
+
+                        if resource_given > 0:
+                            self.logger.info('HOUSEHOLD.RESOURCES.TRANSFER.AUTH: {} {} {}'.format(
+                                household.id, provider.id, resource_given))
+                        else:
+                            self.logger.info('HOUSEHOLD.RESOURCES.TRANSFER.FAIL.AUTH: {} {}'.format(
+                                household.id, provider.id
+                            ))
 
                         # Update amount of resources needed
                         resources_needed -= resource_given
@@ -553,11 +675,15 @@ class AgentResourceTransferSystem(System, IDecodable):
                             resource_given = AgentResourceTransferSystem.ask_for_resources(provider, resources_needed)
                             household[ResourceComponent].resources += resource_given
 
+                            if resource_given > 0:
+                                self.logger.info('HOUSEHOLD.RESOURCES.TRANSFER.PEER: {} {} {}'.format(
+                                    household.id, provider.id, resource_given))
+                            else:
+                                self.logger.info('HOUSEHOLD.RESOURCES.TRANSFER.FAIL.PEER: {} {}'.format(
+                                    household.id, provider.id))
+
                             # Update amount of resources needed
                             resources_needed -= resource_given
-
-                    if loan_flag != resources_needed:
-                        self.model.environment[ActionComponent].loan_count += 1
 
     @staticmethod
     def ask_for_resources(h: Household, amount: int) -> int:
@@ -580,30 +706,49 @@ class AgentResourceTransferSystem(System, IDecodable):
             return amount
 
 
-class AgentResourceConsumptionSystem(System, IDecodable):
+class AgentResourceConsumptionSystem(System, IDecodable, ILoggable):
 
     def __init__(self, id: str, model: Model,priority):
-        super().__init__(id, model, priority=priority)
+        System.__init__(self, id, model, priority=priority)
+        IDecodable.__init__(self)
+        ILoggable.__init__(self, 'model.RCS')
 
     @staticmethod
     def decode(params: dict):
         return AgentResourceConsumptionSystem(params['id'], params['model'], params['priority'])
 
+    @staticmethod
+    def consume(resources, required_resources) -> (int, float):
+        # This is actually the inverse of hunger with 1.0 being completely 'full' and zero being 'starving'
+        hunger = min(1.0, resources / required_resources)
+        remaining_resources = max(0, resources - required_resources)
+
+        return remaining_resources, hunger
+
+    @staticmethod
+    def ARCProcess(resComp: ResourceComponent) -> float:
+
+        req_res = resComp.required_resources()
+        rem_res, hunger = AgentResourceConsumptionSystem.consume(resComp.resources, req_res)
+        resComp.hunger = hunger
+        resComp.satisfaction += hunger
+        resComp.resources = rem_res
+
+        return req_res * hunger
+
     def execute(self):
-        for agent in self.model.environment.getAgents():
-            resComp = agent[ResourceComponent]
-            # This is actually the inverse of hunger with 1.0 being completely 'full' and zero being 'starving'
-            resComp.hunger = min(1.0, resComp.resources / resComp.required_resources())
-            resComp.satisfaction += resComp.hunger
-            resComp.resources = max(0,
-                 resComp.resources - resComp.required_resources())
+        for stats in [(a.id, CAgentResourceConsumptionSystemFunctions.ARCProcess(a[ResourceComponent]))
+                      for a in self.model.environment.getAgents()]:
+            self.logger.info('HOUSEHOLD.CONSUME: {} {}'.format(stats[0], stats[1]))
 
 
-class AgentPopulationSystem(System, IDecodable):
+class AgentPopulationSystem(System, IDecodable, ILoggable):
     """This system is responsible for managing agent reproduction, death and aging"""
     def __init__(self, id: str, model: Model, priority, birth_rate, death_rate, yrs_per_move, num_settlements,
                  cell_capacity):
-        super().__init__(id, model, priority=priority)
+        System.__init__(self, id, model, priority=priority)
+        IDecodable.__init__(self)
+        ILoggable.__init__(self, 'model.APS')
 
         self.birth_rate = birth_rate
         self.death_rate = death_rate
@@ -624,6 +769,8 @@ class AgentPopulationSystem(System, IDecodable):
             self.model.environment[SettlementRelationshipComponent].create_settlement()
 
     def split_household(self, household: Household):
+
+        self.logger.info('HOUSEHOLD.SPLIT: {}'.format(household.id))
 
         if household.hasComponent(HouseholdPreferenceComponent):
             new_household = PreferenceHousehold(self.num_households, self.model, -1, 0.0)
@@ -646,6 +793,10 @@ class AgentPopulationSystem(System, IDecodable):
         half_res = household[ResourceComponent].resources / 2.0
         household[ResourceComponent].resources -= half_res
         new_household[ResourceComponent].resources += half_res
+
+        # Copy across hunger and satisfaction values
+        new_household[ResourceComponent].hunger = household[ResourceComponent].hunger
+        new_household[ResourceComponent].satisfaction = household[ResourceComponent].satisfaction
 
         # Split land
         num_to_split = len(household[ResourceComponent].ownedLand) // 2
@@ -694,7 +845,6 @@ class AgentPopulationSystem(System, IDecodable):
             children.remove(id)
             child_count -= 1
 
-
         # Set Preference
         if new_household.hasComponent(HouseholdPreferenceComponent):
             new_household[HouseholdPreferenceComponent].prev_hunger = household[HouseholdPreferenceComponent].prev_hunger
@@ -704,6 +854,9 @@ class AgentPopulationSystem(System, IDecodable):
 
         self.num_households += 1
 
+        self.logger.info('CREATE.HOUSEHOLD: {} {} {}'.format(new_household.id, sID, self.model.environment[
+            SettlementRelationshipComponent].settlements[sID].pos[-1]))
+
     def execute(self):
         toRem = []
         for household in self.model.environment.getAgents():
@@ -711,20 +864,21 @@ class AgentPopulationSystem(System, IDecodable):
             # Reallocation check
             if self.model.systemManager.timestep != 0 and self.model.systemManager.timestep % self.model.environment[SettlementRelationshipComponent].yrs_per_move == 0:
                 if self.model.random.random() > (household[ResourceComponent].satisfaction / (self.model.environment[SettlementRelationshipComponent].yrs_per_move-1)):
-                    if self.model.debug:
-                        print('Moving Household: ' + str(household.id))
+
+                    logging.debug('Moving Household: ' + str(household.id))
                     self.reallocate_agent(household)
+
                 household[ResourceComponent].satisfaction = 0.0  # Reset hunger decision every 'yrs_per_move' steps
 
             # Birth Chance
             for i in range(household[ResourceComponent].able_workers()):
                 if self.model.random.random() <= self.birth_rate:
                     household[ResourceComponent].add_occupant(household[ResourceComponent].get_next_id())
+                    self.logger.info('HOUSEHOLD.BIRTH: {}'.format(household.id))
 
             # Split household if household reaches capacity
             if len(household[ResourceComponent].occupants) > ResourceComponent.carrying_capacity:
-                if self.model.debug:
-                    print('Splitting Household: ' + str(household.id))
+                logging.debug('Splitting Household: ' + str(household.id))
                 self.split_household(household)
 
 
@@ -739,6 +893,7 @@ class AgentPopulationSystem(System, IDecodable):
 
             for o in occuRem:
                 household[ResourceComponent].occupants.pop(o)
+                self.logger.info('HOUSEHOLD.DEATH: {}'.format(household.id))
 
             if household[ResourceComponent].able_workers() == 0:  # Add households to the delete list
                 toRem.append(household)
@@ -751,6 +906,11 @@ class AgentPopulationSystem(System, IDecodable):
             # Delete Agent
             self.model.environment.removeAgent(household.id)
 
+            if len(household[ResourceComponent].occupants) > 0:
+                self.logger.info('REMOVE.HOUSEHOLD.ORPHANED: {}'.format(household.id))
+            else:
+                self.logger.info('REMOVE.HOUSEHOLD.EMPTY: {}'.format(household.id))
+
     def reallocate_agent(self, household: Household):
         # Get rid of all land ownership that household has
         self.model.environment.cells.loc[(self.model.environment.cells.isOwned == household.id), 'isOwned'] = -1
@@ -759,6 +919,9 @@ class AgentPopulationSystem(System, IDecodable):
         old_sid = household[HouseholdRelationshipComponent].settlementID
         if old_sid != -1:
             self.model.environment[SettlementRelationshipComponent].remove_household(household)
+
+        if old_sid not in self.model.environment[SettlementRelationshipComponent].settlements:
+            self.logger.info('REMOVE.SETTLEMENT.ABANDONED: {}'.format(old_sid))
 
         # Check for settlement with most wealth
         mostWealth = 0
@@ -787,9 +950,12 @@ class AgentPopulationSystem(System, IDecodable):
             household[PositionComponent].x = new_x
             household[PositionComponent].y = new_y
 
+            self.logger.info('HOUSEHOLD.MOVE.SETTLEMENT: {} {} {} {}'.format(household.id, old_sid, most_id,
+                                    self.model.environment[SettlementRelationshipComponent].settlements[most_id].pos[-1]))
+
         else:
             # Assign new household position if it chooses to not move to an existing settlement
-            print('Moving Household to random location')
+
             hPos = (household[PositionComponent].x, household[PositionComponent].y)
             viable_land = [x for x in self.model.environment.getNeighbours(hPos,
                      radius=int(ResourceComponent.vision_square ** .5))
@@ -809,13 +975,16 @@ class AgentPopulationSystem(System, IDecodable):
             # Create a new Settlement
             sttlID = self.model.environment.getComponent(SettlementRelationshipComponent).create_settlement()
             self.model.environment[SettlementRelationshipComponent].settlements[sttlID].pos.append(new_unq_id)
+            self.logger.info('CREATE.SETTLEMENT: {} {}'.format(sttlID, new_unq_id))
+
+            self.model.environment.cells.at[new_unq_id, 'isSettlement'] = sttlID
 
             # Move House and add it to settlement
             household[PositionComponent].x = new_x
             household[PositionComponent].y = new_y
             self.model.environment.getComponent(SettlementRelationshipComponent).add_household_to_settlement(household, sttlID)
 
-
+            self.logger.info('HOUSEHOLD.MOVE.RANDOM: {} {} {} {}'.format(household.id, old_sid, sttlID, new_unq_id))
 
     @staticmethod
     def decode(params: dict):
@@ -823,6 +992,8 @@ class AgentPopulationSystem(System, IDecodable):
                                      params['death_rate'], params['yrs_per_move'], params['init_settlements'],
                                      params['cell_capacity'])
 
+
+# Collectors
 
 class AgentCollector(Collector, IDecodable):
 
@@ -930,3 +1101,46 @@ class SettlementHouseholdCollector(FileCollector, IDecodable):
     @staticmethod
     def decode(params: dict):
         return SettlementHouseholdCollector(params['id'], params['model'], params['filename'], params['write'])
+
+
+class AgentSnapshotCollector(Collector):
+
+    def __init__(self, id: str, model, file_name, frequency=1):
+        super().__init__(id, model, frequency=frequency)
+
+        self.file_name = file_name
+
+    def collect(self):
+
+        toWrite = []
+
+        for household in self.model.environment.getAgents():
+            toWrite.append(household.jsonify())
+
+        with open(self.file_name + '/iteration_{}.json'.format(self.model.systemManager.timestep), 'w') as outfile:
+            json.dump(toWrite, outfile, indent=4)
+
+
+class SettlementSnapshotCollector(Collector):
+
+    def __init__(self, id: str, model, file_name, frequency: int = 1):
+        super().__init__(id, model, frequency=frequency)
+
+        self.file_name = file_name
+
+    def collect(self):
+
+        toWrite = []
+
+        for sid in self.model.environment[SettlementRelationshipComponent].settlements:
+            generated_dict = self.model.environment[SettlementRelationshipComponent].settlements[sid].jsonify()
+            generated_dict['wealth'] = self.model.environment[SettlementRelationshipComponent].getSettlementWealth(sid)
+            generated_dict['load'] = self.model.environment[SettlementRelationshipComponent].getSettlementLoad(sid)
+            generated_dict['population'] = self.model.environment[SettlementRelationshipComponent].getSettlementPopulation(sid)
+            generated_dict['farm_utility'] = self.model.environment[SettlementRelationshipComponent].getSettlementFarmUtility(sid)
+            generated_dict['forage_utility'] = self.model.environment[SettlementRelationshipComponent].getSettlementForageUtility(sid)
+            toWrite.append(generated_dict)
+
+        with open(self.file_name + '/iteration_{}.json'.format(self.model.systemManager.timestep), 'w') as outfile:
+            json.dump(toWrite, outfile, indent=4)
+
