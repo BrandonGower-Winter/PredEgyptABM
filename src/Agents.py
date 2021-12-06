@@ -353,6 +353,8 @@ class AgentResourceAcquisitionSystem(System, IDecodable, ILoggable):
     forage_consumption_rate = 0
     forage_production_multiplier = 0.0
 
+    delay_factor = 0
+
     @staticmethod
     def decode(params: dict):
         AgentResourceAcquisitionSystem.farms_per_patch = params['farms_per_patch']
@@ -363,6 +365,9 @@ class AgentResourceAcquisitionSystem(System, IDecodable, ILoggable):
         AgentResourceAcquisitionSystem.farming_production_rate = params['farming_production_rate']
         AgentResourceAcquisitionSystem.forage_consumption_rate = params['forage_consumption_rate']
         AgentResourceAcquisitionSystem.forage_production_multiplier = params['forage_production_multiplier']
+
+        if 'delay_factor' in params:
+            AgentResourceAcquisitionSystem.delay_factor = params['delay_factor']
 
         return AgentResourceAcquisitionSystem(params['id'], params['model'], params['priority'])
 
@@ -463,12 +468,10 @@ class AgentResourceAcquisitionSystem(System, IDecodable, ILoggable):
         tmp_Penalty = CVegetationGrowthSystemFunctions.tempPenalty(temperature, random)
 
         wtr_penalty, moisture_remain = CVegetationGrowthSystemFunctions.waterPenalty(moisture_cells[patch_id],
-                                        moisture_consumption_rate/crop_gestation_period, 1.0)
+                                        moisture_consumption_rate/crop_gestation_period)
         # Calculate Crop Yield
 
-        if SoilMoistureSystem.is_flooded(height_cells[patch_id], coords, sm_comp, ge_comp):
-            wtr_penalty = 1.0
-        else:
+        if not SoilMoistureSystem.is_flooded(height_cells[patch_id], coords, sm_comp, ge_comp):
             # Adjust soil moisture if cell not flooded
             moisture_cells[patch_id] = moisture_remain
 
@@ -513,7 +516,7 @@ class AgentResourceAcquisitionSystem(System, IDecodable, ILoggable):
                           household[HouseholdPreferenceComponent].farm_utility, household[HouseholdPreferenceComponent].forage_utility)
 
             else:
-                farm_threshold = self.model.systemManager.timestep / (self.model.iterations * 0.5)
+                farm_threshold = (self.model.systemManager.timestep - AgentResourceAcquisitionSystem.delay_factor) / (self.model.iterations * 0.5)
                 #farm_threshold = self.model.systemManager.timestep / self.model.iterations
                 numToFarm = CAgentResourceAcquisitionFunctions.num_to_farm(farm_threshold, max_farm, self.model.random)
 

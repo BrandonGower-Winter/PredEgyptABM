@@ -15,7 +15,7 @@ from Logging import ILoggable
 from Progress import progress
 
 # Default Decoder file path
-default_path = './resources/faiyum_to_luxor/'
+default_path = './resources/traditional/scenario3/'
 store_path = 'EgyptModel'
 
 
