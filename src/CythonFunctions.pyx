@@ -53,39 +53,52 @@ cdef class CSoilMoistureSystemFunctions:
 
     @staticmethod
     def is_flooded(height, pos, sm_comp, global_env_comp):
-        return height < global_env_comp.flood + sm_comp.avgWaterHeight(pos)
+        if global_env_comp.flood == 0:
+            return False
+        else:
+            return height < global_env_comp.flood + sm_comp.avgWaterHeight(pos)
 
     @staticmethod
     def SMProcess(df, sm_comp, global_env_comp) -> [float]:
         cdef int i
-        cdef float PET, rdr, wfc, moisture
+        cdef float PET
 
-        soil_vals = df['moisture'].to_numpy()
-        for row in df.itertuples():
-            if row.isWater:
-                continue
+        # COMPUTE PET Values
+        cdef np.ndarray[double] sand_content = df['sand_content'].to_numpy(dtype=np.double)
+        cdef np.ndarray[double] clay_content = 100 - sand_content
+        cdef np.ndarray[double] sand_sqrd = sand_content ** 2
+        cdef np.ndarray[double] alpha = (2.71828 ** (-4.396 - 0.0715 * clay_content - 0.000488 * sand_sqrd - 0.00004258 * sand_sqrd * clay_content)) * 100
+        cdef np.ndarray[double] beta = -3.140 - 0.000000222 * (clay_content ** 2) - 0.00003484 * sand_sqrd * clay_content
 
-            if CSoilMoistureSystemFunctions.is_flooded(row.height, row.pos, sm_comp, global_env_comp):
-                soil_vals[row.Index] = CSoilMoistureSystemFunctions.wfc(global_env_comp.soil_depth, row.sand_content)
-                continue
+        cdef np.ndarray[double] heightmap = df['height'].to_numpy()
+        cdef np.ndarray[double] soil_vals = df['moisture'].to_numpy()
 
-            for i in range(12):
-                PET = CSoilMoistureSystemFunctions.thornthwaite(
-                    sm_comp.L, sm_comp.N, global_env_comp.temp[i], sm_comp.I, sm_comp.alpha)
+        cdef np.ndarray is_flooded = np.full(len(soil_vals), False, dtype=np.bool)
 
-                if PET > global_env_comp.rainfall[i]:
-                    rdr = CSoilMoistureSystemFunctions.calcRdr(row.sand_content,
-                                                               soil_vals[row.Index] + global_env_comp.rainfall[i],
-                                                               global_env_comp.soil_depth)
-                    moisture = soil_vals[row[0]] - (PET - global_env_comp.rainfall[i]) * rdr
-                    soil_vals[row.Index] = moisture if moisture > 0 else 0
+        if global_env_comp.flood != 0:
+            water_heights = np.array([sm_comp.avgWaterHeight(pos) for pos in df['pos']], dtype=np.double)
+            is_flooded = heightmap < (water_heights + global_env_comp.flood)
 
-                else:
-                    wfc = CSoilMoistureSystemFunctions.wfc(global_env_comp.soil_depth, row.sand_content)
+        cdef np.ndarray[double] flooded_vals = global_env_comp.soil_depth * (0.3 + (0.4 * (1 - sand_content/100.0)))
+        cdef np.ndarray[double] non_flooded_vals = np.zeros(len(soil_vals))
+        # For Each Month
+        for i in range(12):
 
-                    moisture = soil_vals[row.Index] + (
-                            global_env_comp.rainfall[i] - PET)
-                    soil_vals[row.Index] = moisture if moisture < wfc else wfc
+            # Calculate Potential Evaporation
+            PET = CSoilMoistureSystemFunctions.thornthwaite(sm_comp.L, sm_comp.N, global_env_comp.temp[i],
+                                                            sm_comp.I, sm_comp.alpha)
+
+            # Calculate new soil values
+            if PET > global_env_comp.rainfall[i]: # When Rainfall is lower than PET
+                non_flooded_vals = np.maximum(soil_vals - (PET - global_env_comp.rainfall[i]) *
+                        ((1 + alpha) / (1 + alpha * ((soil_vals / global_env_comp.soil_depth) ** beta))), 0)
+
+            else: # When Rainfall is higher than PET
+                non_flooded_vals = soil_vals - (global_env_comp.rainfall[i] - PET)
+                non_flooded_vals = np.minimum(non_flooded_vals, flooded_vals)
+
+        # Apply new soil values
+        soil_vals = np.where(is_flooded, flooded_vals, non_flooded_vals)
 
         return soil_vals
 
@@ -102,15 +115,12 @@ cdef class CVegetationGrowthSystemFunctions:
         return val * rate
 
     @staticmethod
-    def waterPenalty(float moisture, float moisture_ideal, float capacity_ratio):
-        cdef float moisture_req
+    def waterPenalty(float moisture, float moisture_ideal):
 
-        moisture_req = capacity_ratio * moisture_ideal
-
-        if moisture < moisture_req:
-            return moisture / moisture_req, 0.0
+        if moisture < moisture_ideal:
+            return moisture / moisture_ideal, 0.0
         else:
-            return 1.0, moisture - moisture_req
+            return 1.0, moisture - moisture_ideal
 
     @staticmethod
     cdef float tOpt(float temp):
@@ -126,47 +136,34 @@ cdef class CVegetationGrowthSystemFunctions:
     @staticmethod
     def VGProcess(df, vg_comp, sm_comp, ge_comp, random) -> ([float], [float]):
 
-        cdef int cell_len
-        cdef float mean, ratio, capacity_ratio, r
+        cdef float r, topt
 
-        veg_cells = df['vegetation'].to_numpy()
-        moist_cells = df['moisture'].to_numpy()
 
-        cell_len = len(veg_cells) - 1
+        cdef np.ndarray[double] veg_cells = df['vegetation'].to_numpy()
+        cdef np.ndarray[double] moist_cells = df['moisture'].to_numpy()
 
-        for row in df.itertuples():
 
-            if row.isWater or row.isOwned != -1:
-                continue
+        cdef np.ndarray[double] rs = np.zeros(len(veg_cells))
 
-            # Check for cell refill given neighbour's vegetation density
-            if veg_cells[row.Index] < 1.0:
-                means = []
-                if row.Index != 0:
-                    means.append(veg_cells[row.Index - 1])
-                if row.Index < cell_len:
-                    means.append(veg_cells[row.Index + 1])
+        # Get the available moisture
+        cdef np.ndarray[double] moist_avail = moist_cells - (veg_cells / vg_comp.carry_pop * vg_comp.ideal_moisture)
 
-                mean = np.mean(means)
-                ratio = mean / vg_comp.carry_pop
-                if random.random() < ratio:
-                    veg_cells[row.Index] = mean
+        # Calculate water penalties
+        np.clip(moist_avail / vg_comp.ideal_moisture , 0.0, 1.0, out=rs)
 
-            else:
-                capacity_ratio = veg_cells[row.Index] / vg_comp.carry_pop
+        # Calculate remaining moisture
+        np.clip(moist_avail - vg_comp.ideal_moisture, 0.0, None, out=moist_cells)
 
-                if CSoilMoistureSystemFunctions.is_flooded(row.height, row.pos, sm_comp, ge_comp):
-                    r = 1.0
-                else:
-                    r, moist_cells[row.Index] = CVegetationGrowthSystemFunctions.waterPenalty(moist_cells[row.Index],
-                                                                                              vg_comp.ideal_moisture,
-                                                                                              capacity_ratio)
+        # Calculate the temperature penalty
+        topt = CVegetationGrowthSystemFunctions.tOpt(np.mean(ge_comp.temp))
+        rs *= random.uniform(0.8 - 0.0005 * (topt ** 2.0), 0.8 + 0.02 * topt)
 
-                r *= CVegetationGrowthSystemFunctions.tempPenalty(np.mean(ge_comp.temp), random)
-                veg_cells[row.Index] -= CVegetationGrowthSystemFunctions.decay(veg_cells[row.Index], vg_comp.decay_rate)
-                veg_cells[row.Index] += CVegetationGrowthSystemFunctions.Logistic_Growth(veg_cells[row.Index],
-                                                                                         vg_comp.carry_pop * r,
-                                                                                         vg_comp.growth_rate)
+        # Update Vegetation Values:
+        _filter = [veg_cells <= 1.0, veg_cells > 1.0]
+        choicelist = [rs * vg_comp.growth_rate,
+                      np.clip(veg_cells - (veg_cells * vg_comp.decay_rate) + (veg_cells * rs * vg_comp.growth_rate),
+                              0.0, vg_comp.carry_pop)]
+        veg_cells = np.select(_filter, choicelist)
 
         return veg_cells, moist_cells
 
@@ -269,13 +266,10 @@ cdef class CAgentResourceAcquisitionFunctions:
         tmp_penalty = CVegetationGrowthSystemFunctions.tempPenalty(temperature, random)
 
         wtr_penalty, moisture_remain = CVegetationGrowthSystemFunctions.waterPenalty(moisture_cells[patch_id],
-                                                                                     moisture_consumption_rate / crop_gestation_period,
-                                                                                     1.0)
+                                                                                     moisture_consumption_rate / crop_gestation_period)
         # Calculate Crop Yield
 
-        if CSoilMoistureSystemFunctions.is_flooded(height_cells[patch_id], coords, sm_comp, ge_comp):
-            wtr_penalty = 1.0
-        else:
+        if not CSoilMoistureSystemFunctions.is_flooded(height_cells[patch_id], coords, sm_comp, ge_comp):
             # Adjust soil moisture if cell not flooded
             moisture_cells[patch_id] = moisture_remain
 

@@ -161,17 +161,26 @@ class GlobalEnvironmentSystem(System, IDecodable, ILoggable):
             max = CGlobalEnvironmentCurves.cosine_lerp(startArr[1], endArr[1], percentage, func_dict['frequency'])
         elif func_dict['id'] == 'exponential':
             min = CGlobalEnvironmentCurves.exponential_lerp(startArr[0], endArr[0], percentage, func_dict['k'])
-            max = CGlobalEnvironmentCurves.exponential_lerp(startArr[0], endArr[0], percentage, func_dict['k'])
+            max = CGlobalEnvironmentCurves.exponential_lerp(startArr[1], endArr[1], percentage, func_dict['k'])
         elif func_dict['id'] == 'dampened_sinusoidal':
             min = CGlobalEnvironmentCurves.dampening_sinusoidal_lerp(startArr[0], endArr[0], percentage,
                                                                      func_dict['frequency'], func_dict['k'])
-            max = CGlobalEnvironmentCurves.dampening_sinusoidal_lerp(startArr[0], endArr[0], percentage,
+            max = CGlobalEnvironmentCurves.dampening_sinusoidal_lerp(startArr[1], endArr[1], percentage,
                                                                      func_dict['frequency'], func_dict['k'])
         elif func_dict['id'] == 'linear_dampened_sinusoidal':
             min = CGlobalEnvironmentCurves.linear_modified_dsinusoidal_lerp(startArr[0], endArr[0], percentage,
                                                      func_dict['frequency'], func_dict['k'], func_dict['m'])
-            max = CGlobalEnvironmentCurves.linear_modified_dsinusoidal_lerp(startArr[0], endArr[0], percentage,
+
+            # This account for the fact that it can be challenging getting the function to lower bound at zero
+            if min < 0.2:
+                min = 0.0
+
+            max = CGlobalEnvironmentCurves.linear_modified_dsinusoidal_lerp(startArr[1], endArr[1], percentage,
                                                      func_dict['frequency'], func_dict['k'], func_dict['m'])
+
+            if max < 0.2:
+                max = 0.0
+
         else:
             min = CGlobalEnvironmentCurves.linear_lerp(startArr[0], endArr[0], percentage)
             max = CGlobalEnvironmentCurves.linear_lerp(startArr[1], endArr[1], percentage)
@@ -363,14 +372,12 @@ class VegetationGrowthSystem(System, IDecodable):
         return val * rate
 
     @staticmethod
-    def waterPenalty(moisture: float, moisture_ideal: float, capacity_ratio: float):
+    def waterPenalty(moisture: float, moisture_ideal: float):
 
-        moisture_req = capacity_ratio * moisture_ideal
-
-        if moisture < moisture_req:
-            return moisture/moisture_req, 0.0
+        if moisture < moisture_ideal:
+            return moisture/moisture_ideal, 0.0
         else:
-            return 1.0, moisture - moisture_req
+            return 1.0, moisture - moisture_ideal
 
     @staticmethod
     def tOpt(temp: float):
@@ -408,18 +415,13 @@ class VegetationGrowthSystem(System, IDecodable):
                     veg_cells[row.Index] = mean
 
             else:
-                capacity_ratio = veg_cells[row.Index] / vg_comp.carry_pop
 
-                if SoilMoistureSystem.is_flooded(row.height, row.pos, sm_comp, ge_comp):
-                    r = 1.0
-                else:
-                    r, moist_cells[row.Index] = CVegetationGrowthSystemFunctions.waterPenalty(moist_cells[row.Index],
-                                                                              vg_comp.ideal_moisture, capacity_ratio)
+                r, moist_cells[row.Index] = CVegetationGrowthSystemFunctions.waterPenalty(moist_cells[row.Index],
+                                                                              vg_comp.ideal_moisture)
 
                 r *= CVegetationGrowthSystemFunctions.tempPenalty(np.mean(ge_comp.temp), random)
                 veg_cells[row.Index] -= CVegetationGrowthSystemFunctions.decay(veg_cells[row.Index], vg_comp.decay_rate)
-                veg_cells[row.Index] += CVegetationGrowthSystemFunctions.Logistic_Growth(veg_cells[row.Index],
-                                                                         vg_comp.carry_pop * r, vg_comp.growth_rate)
+                veg_cells[row.Index] = min(veg_cells[row.Index] + (veg_cells[row.Index] * r * vg_comp.growth_rate), vg_comp.carry_pop)
 
         return veg_cells, moist_cells
 
