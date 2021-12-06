@@ -35,7 +35,7 @@
           "end_temp" : [13,31],
           "start_rainfall" : [8, 10],
           "end_rainfall" : [0, 4],
-          "start_flood" : [0, 0],
+          "start_flood" : [12, 21],
           "end_flood" : [0, 0],
           "soil_depth" : 1000,
           "interpolator_range": 1000,

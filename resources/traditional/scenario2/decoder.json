@@ -100,7 +100,8 @@
         "crop_gestation_period": 4,
         "farming_production_rate": 1750,
         "forage_consumption_rate": 250,
-        "forage_production_multiplier": 4
+        "forage_production_multiplier": 4,
+        "delay_factor": 5
       }
     },
     {
@@ -152,7 +153,7 @@
         "init_occupants": 6,
         "init_age_range": [13, 25],
         "vision_square": 2500,
-        "load_difference": 0.6,
+        "load_difference": 0.6
       },
       "post_agent_init": {
         "func": "init_settlements",

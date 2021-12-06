@@ -17,48 +17,46 @@
       "soil_mask" : "./resources/Faiyum_to_Luxor_Soil_Mask.png",
       "max_height" : 1400,
       "min_height" : 0,
-      "cell_size" : 2890000,
-      "cell_dim" : 1700,
-      "max_farmable_slope" : 45
+      "cell_dim" : 2000
     }
   },
 
   "systems" : [
     {
-        "name" :  "GlobalEnvironmentSystem",
-        "module" : "VegetationModel",
-        "params" :
-        {
-          "id" : "GES",
-          "priority" : 10,
-          "start_temp" : [13,27],
-          "end_temp" : [13,31],
-          "start_rainfall" : [8, 10],
-          "end_rainfall" : [0, 4],
-          "start_flood" : [0, 0],
-          "end_flood" : [0, 0],
-          "soil_depth" : 1000,
-          "interpolator_range": 1000,
-          "temperature_dict": {
-            "id": "linear_dampened_sinusoidal",
-            "frequency": 16,
-            "k": 1,
-            "m": 1
-          },
-          "rainfall_dict": {
-            "id": "linear_dampened_sinusoidal",
-            "frequency": 16,
-            "k": 1,
-            "m": 1
-          },
-          "flood_dict": {
-            "id": "linear_dampened_sinusoidal",
-            "frequency": 16,
-            "k": 1,
-            "m": 1
-          }
+      "name" :  "GlobalEnvironmentSystem",
+      "module" : "VegetationModel",
+      "params" :
+      {
+        "id" : "GES",
+        "priority" : 10,
+        "start_temp" : [13,27],
+        "end_temp" : [13,27],
+        "start_rainfall" : [8, 12],
+        "end_rainfall" : [8, 12],
+        "start_flood" : [12, 21],
+        "end_flood" : [0, 0],
+        "soil_depth" : 1000,
+        "interpolator_range": 1000,
+        "temperature_dict": {
+          "id": "linear",
+          "frequency": 16,
+          "k": 1,
+          "m": 1
+        },
+        "rainfall_dict": {
+          "id": "linear",
+          "frequency": 16,
+          "k": 1,
+          "m": 1
+        },
+        "flood_dict": {
+          "id": "linear",
+          "frequency": 16,
+          "k": 1,
+          "m": 1
         }
-      },
+      }
+    },
     {
       "name" : "SoilMoistureSystem",
       "module" : "VegetationModel",
@@ -79,11 +77,11 @@
       {
         "id" : "VGS",
         "priority" : 7,
-        "init_pop" : 2000,
-        "carry_pop" : 4000,
-        "growth_rate" : 0.05,
+        "init_pop" : 21000,
+        "carry_pop" : 42000,
+        "growth_rate" : 3.96,
         "decay_rate" : 0.02,
-        "ideal_moisture" : 300
+        "ideal_moisture" : 2360
       }
     },
     {
@@ -93,14 +91,16 @@
       {
         "id": "RAS",
         "priority": 8,
-        "farms_per_patch": 4,
-        "land_buffer": 1,
-        "max_acquisition_distance": 10,
-        "moisture_consumption_rate": 400,
-        "crop_gestation_period": 4,
-        "farming_production_rate": 1750,
-        "forage_consumption_rate": 250,
-        "forage_production_multiplier": 4
+        "farms_per_patch": 12,
+        "land_buffer": 2,
+        "max_acquisition_distance": 20,
+        "moisture_consumption_rate": 270,
+        "crop_gestation_period": 1,
+        "farming_production_rate": 6000,
+        "forage_consumption_rate": 3500,
+        "forage_production_multiplier": 1,
+        "delay_factor": 1,
+        "max_farmable_slope" : 45
       }
     },
     {
@@ -142,7 +142,7 @@
     {
       "name": "Household",
       "module": "Agents",
-      "number": 100,
+      "number": 1000,
       "params":
       {
         "age_of_maturity": 10,
@@ -152,16 +152,16 @@
         "init_occupants": 6,
         "init_age_range": [13, 25],
         "vision_square": 2500,
-        "load_difference": 0.6,
+        "load_difference": 0.6
       },
       "post_agent_init": {
         "func": "init_settlements",
         "params": {
           "strategy": "cluster",
-          "clusters": [[50,10], [120, 25], [60, 50], [60, 100], [45, 160], [65,200], [105, 250], [125, 275]],
+          "clusters": [[80, 25], [60, 50], [60, 100], [45, 160], [65,200], [105, 250], [125, 275]],
           "range": 20
-          }
         }
+      }
     }
   ]
 }

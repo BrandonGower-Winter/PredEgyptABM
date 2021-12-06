@@ -152,7 +152,7 @@
         "init_occupants": 6,
         "init_age_range": [13, 25],
         "vision_square": 2500,
-        "load_difference": 0.6,
+        "load_difference": 0.6
       },
       "post_agent_init": {
         "func": "init_settlements",
