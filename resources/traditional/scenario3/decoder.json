@@ -23,40 +23,40 @@
 
   "systems" : [
     {
-        "name" :  "GlobalEnvironmentSystem",
-        "module" : "VegetationModel",
-        "params" :
-        {
-          "id" : "GES",
-          "priority" : 10,
-          "start_temp" : [13,27],
-          "end_temp" : [13,31],
-          "start_rainfall" : [8, 12],
-          "end_rainfall" : [0, 4],
-          "start_flood" : [12, 21],
-          "end_flood" : [8, 11],
-          "soil_depth" : 1000,
-          "interpolator_range": 1000,
-          "temperature_dict": {
-            "id": "cosine",
-            "frequency": 16,
-            "k": 1,
-            "m": 1
-          },
-          "rainfall_dict": {
-            "id": "cosine",
-            "frequency": 16,
-            "k": 1,
-            "m": 1
-          },
-          "flood_dict": {
-            "id": "cosine",
-            "frequency": 16,
-            "k": 1,
-            "m": 1
-          }
+      "name" :  "GlobalEnvironmentSystem",
+      "module" : "VegetationModel",
+      "params" :
+      {
+        "id" : "GES",
+        "priority" : 10,
+        "start_temp" : [13,27],
+        "end_temp" : [13,31],
+        "start_rainfall" : [8, 12],
+        "end_rainfall" : [0, 4],
+        "start_flood" : [12, 21],
+        "end_flood" : [8, 11],
+        "soil_depth" : 1000,
+        "interpolator_range": 1000,
+        "temperature_dict": {
+          "id": "cosine",
+          "frequency": 16,
+          "k": 1,
+          "m": 1
+        },
+        "rainfall_dict": {
+          "id": "cosine",
+          "frequency": 16,
+          "k": 1,
+          "m": 1
+        },
+        "flood_dict": {
+          "id": "cosine",
+          "frequency": 16,
+          "k": 1,
+          "m": 1
         }
-      },
+      }
+    },
     {
       "name" : "SoilMoistureSystem",
       "module" : "VegetationModel",
@@ -132,8 +132,8 @@
         "birth_rate": 0.002,
         "death_rate": 0.001,
         "yrs_per_move": 3,
-        "init_settlements":  50,
-        "cell_capacity": 30
+        "init_settlements":  100,
+        "cell_capacity": 100
       }
     }
   ],

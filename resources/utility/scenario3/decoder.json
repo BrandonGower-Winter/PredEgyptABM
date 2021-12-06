@@ -17,8 +17,7 @@
       "soil_mask" : "./resources/Faiyum_to_Luxor_Soil_Mask.png",
       "max_height" : 1400,
       "min_height" : 0,
-      "cell_dim" : 2000,
-      "max_farmable_slope" : 45
+      "cell_dim" : 2000
     }
   },
 
@@ -163,8 +162,8 @@
           "strategy": "cluster",
           "clusters": [[80, 25], [60, 50], [60, 100], [45, 160], [65,200], [105, 250], [125, 275]],
           "range": 20
-          }
         }
+      }
     }
   ]
 }
