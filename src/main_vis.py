@@ -419,10 +419,10 @@ def generate_environment_plots(parser, pixels):
                      parser.path + '/environment_plots/land_ownership_animat', 100, vmin=0, vmax=3)
     pandas_to_animat('Animation of `Vegetation` over 1000 years', parser.width, parser.height, environment_snapshots,
                      'vegetation',
-                     parser.path + '/environment_plots/vegetation_animat', 10, vmin=0, vmax=4000)
+                     parser.path + '/environment_plots/vegetation_animat', 10, vmin=0, vmax=10500)
     pandas_to_animat('Animation of `Soil Moisture` over 1000 years', parser.width, parser.height, environment_snapshots,
                      'moisture',
-                     parser.path + '/environment_plots/moisture_animat', 10, vmin=0, vmax=1000)
+                     parser.path + '/environment_plots/moisture_animat', 10, vmin=0, vmax=700)
 
 
 def generate_log_plots(parser):
@@ -503,7 +503,7 @@ if __name__ == '__main__':
     parser = parser.parse_args()
 
     # im_path = './resources/Qena_Rescaled.png'
-    im_path = './resources/utility_scenario_2/heightmap.png'
+    im_path = './resources/utility/scenario2/heightmap.png'
 
     # im_path = './resources/faiyum_to_luxor_larger_image.png'
 
