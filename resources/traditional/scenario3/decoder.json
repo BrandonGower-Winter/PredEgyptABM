@@ -77,7 +77,7 @@
       {
         "id" : "VGS",
         "priority" : 7,
-        "init_pop" : 21000,
+        "init_pop" : 10500,
         "carry_pop" : 42000,
         "growth_rate" : 3.96,
         "decay_rate" : 0.02,

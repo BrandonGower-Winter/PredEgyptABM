@@ -30,27 +30,27 @@
         "id" : "GES",
         "priority" : 10,
         "start_temp" : [13,27],
-        "end_temp" : [13,27],
+        "end_temp" : [13,31],
         "start_rainfall" : [8, 12],
-        "end_rainfall" : [8, 12],
+        "end_rainfall" : [0, 4],
         "start_flood" : [12, 21],
-        "end_flood" : [12, 21],
+        "end_flood" : [8, 11],
         "soil_depth" : 1000,
         "interpolator_range": 1000,
         "temperature_dict": {
-          "id": "linear",
+          "id": "cosine",
           "frequency": 16,
           "k": 1,
           "m": 1
         },
         "rainfall_dict": {
-          "id": "linear",
+          "id": "cosine",
           "frequency": 16,
           "k": 1,
           "m": 1
         },
         "flood_dict": {
-          "id": "linear",
+          "id": "cosine",
           "frequency": 16,
           "k": 1,
           "m": 1
@@ -104,6 +104,15 @@
       }
     },
     {
+      "name" : "AgentRBAdaptationSystem",
+      "module" : "Agents",
+      "params" :
+      {
+        "id": "RBAS",
+        "priority": 7
+      }
+    },
+    {
       "name": "AgentResourceTransferSystem",
       "module": "Agents",
       "params":
@@ -140,7 +149,7 @@
 
   "agents" : [
     {
-      "name": "Household",
+      "name": "RBAdaptiveHousehold",
       "module": "Agents",
       "number": 1000,
       "params":
@@ -152,7 +161,14 @@
         "init_occupants": 6,
         "init_age_range": [13, 25],
         "vision_square": 2500,
-        "load_difference": 0.6
+        "load_difference": 0.6,
+        "yrs_to_look_back": 4,
+        "yr_look_back_weights": [0.4, 0.3, 0.2, 0.1],
+        "max_labour_adapt_size": 12,
+        "risk_elasticity": 0.4,
+        "cognitive_bias": 0.2,
+        "adaptation_intention_threshold": 0.4,
+        "learning_rate": 0.05
       },
       "post_agent_init": {
         "func": "init_settlements",
