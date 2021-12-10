@@ -1,3 +1,5 @@
+import statistics
+
 import VegetationModel
 import math
 import numpy as np
@@ -57,6 +59,10 @@ class ResourceComponent(Component):
 
     def able_workers(self):
         return len([o for o in self.occupants if self.occupants[o].age >= ResourceComponent.age_of_maturity])
+
+    def average_age(self):
+        return statistics.mean([self.occupants[o].age for o in self.occupants
+                                if self.occupants[o].age >= ResourceComponent.age_of_maturity])
 
     def get_next_id(self):
         return '%d_%d' % (self.agent.id, self.occupant_counter)
@@ -121,6 +127,42 @@ class HouseholdPreferenceComponent(Component):
         self.prev_hunger = 1.0
 
 
+class HouseholdRBAdaptiveComponent(Component):
+
+    yrs_to_look_back = 1
+    yr_look_back_weights = [1.0]
+
+    max_labour_adapt_size = 6.0
+
+    risk_elasticity = 1.0
+    cognitive_bias = 0.0
+
+    adaptation_intention_threshold = 0.5
+    learning_rate = 0.05
+
+    def __init__(self, agent: Agent, model: Model):
+        super().__init__(agent, model)
+
+        self.rainfall_memory = [0.0] * HouseholdRBAdaptiveComponent.yrs_to_look_back
+        self.flood_memory = [0.0] * HouseholdRBAdaptiveComponent.yrs_to_look_back
+
+        self.percentage_to_farm = 0.0 # Probability of Agent choosing to farm
+
+    def update_flood_memory(self, val: float):
+        self.flood_memory.append(val)
+
+        # Remove Oldest Memory
+        if len(self.flood_memory) > HouseholdRBAdaptiveComponent.yrs_to_look_back:
+            self.flood_memory.pop(0)
+
+    def update_rainfall_memory(self, val: float):
+        self.rainfall_memory.append(val)
+
+        # Remove Oldest Memory
+        if len(self.rainfall_memory) > HouseholdRBAdaptiveComponent.yrs_to_look_back:
+            self.rainfall_memory.pop(0)
+
+
 class Household(Agent, IDecodable):
 
     def __init__(self, id: str, model: Model, settlementID: int):
@@ -164,6 +206,53 @@ class Household(Agent, IDecodable):
         created_dict['settlement_id'] = self[HouseholdRelationshipComponent].settlementID
         created_dict['load'] = self[HouseholdRelationshipComponent].load
 
+        return created_dict
+
+
+class RBAdaptiveHousehold(Household):
+    """ This Agent-Type is heavily inspired by the agents described by Hailegiorgis, Crooks and Cioffi-Revilla in their
+    paper titled 'An Agent-Based Model for Rural Households Adaptation to Climate Change"""
+
+    def __init__(self, id: str, model: Model, settlementID: int):
+        super().__init__(id, model, settlementID)
+
+        self.addComponent(HouseholdRBAdaptiveComponent(self, model))
+
+    @staticmethod
+    def decode(params: dict):
+        ResourceComponent.age_of_maturity = params['age_of_maturity']
+        ResourceComponent.consumption_rate = params['consumption_rate']
+        ResourceComponent.carrying_capacity = params['carrying_capacity']
+        ResourceComponent.vision_square = params['vision_square']
+        ResourceComponent.child_factor = params['child_factor']
+
+        HouseholdRelationshipComponent.load_difference = params['load_difference']
+
+        HouseholdRBAdaptiveComponent.yrs_to_look_back = params['yrs_to_look_back']
+        HouseholdRBAdaptiveComponent.yr_look_back_weights = params['yr_look_back_weights']
+
+        HouseholdRBAdaptiveComponent.max_labour_adapt_size = params['max_labour_adapt_size']
+
+        HouseholdRBAdaptiveComponent.risk_elasticity = params['risk_elasticity']
+        HouseholdRBAdaptiveComponent.cognitive_bias = params['cognitive_bias']
+
+        HouseholdRBAdaptiveComponent.adaptation_intention_threshold = params['adaptation_intention_threshold']
+        HouseholdRBAdaptiveComponent.learning_rate = params['learning_rate']
+
+        agent = RBAdaptiveHousehold(params['agent_index'], params['model'], -1)
+        for i in range(params['init_occupants']):
+            age = agent.model.random.randrange(params['init_age_range'][0], params['init_age_range'][1])
+            agent[ResourceComponent].add_occupant(agent[ResourceComponent].get_next_id(), age)
+        return agent
+
+    def __str__(self):
+        return super().__str__() + '\n\tProbability to Farm: '.format(
+            self[HouseholdRBAdaptiveComponent].percentage_to_farm)
+
+    def jsonify(self) -> dict:
+        created_dict = super().jsonify()
+
+        created_dict['percentage_to_farm'] = self[HouseholdRBAdaptiveComponent].percentage_to_farm
         return created_dict
 
 
@@ -516,8 +605,10 @@ class AgentResourceAcquisitionSystem(System, IDecodable, ILoggable):
                           household[HouseholdPreferenceComponent].farm_utility, household[HouseholdPreferenceComponent].forage_utility)
 
             else:
-                farm_threshold = (self.model.systemManager.timestep - AgentResourceAcquisitionSystem.delay_factor) / (self.model.iterations * 0.5)
-                #farm_threshold = self.model.systemManager.timestep / self.model.iterations
+                if not household.hasComponent(HouseholdRBAdaptiveComponent):
+                    farm_threshold = (self.model.systemManager.timestep - AgentResourceAcquisitionSystem.delay_factor) / (self.model.iterations * 0.5)
+                else:
+                    farm_threshold = household[HouseholdRBAdaptiveComponent].percentage_to_farm
                 numToFarm = CAgentResourceAcquisitionFunctions.num_to_farm(farm_threshold, max_farm, self.model.random)
 
             numToForage = max_farm - numToFarm
@@ -777,6 +868,8 @@ class AgentPopulationSystem(System, IDecodable, ILoggable):
 
         if household.hasComponent(HouseholdPreferenceComponent):
             new_household = PreferenceHousehold(self.num_households, self.model, -1, 0.0)
+        elif household.hasComponent(HouseholdRBAdaptiveComponent):
+            new_household = RBAdaptiveHousehold(self.num_households, self.model, -1)
         else:
             new_household = Household(self.num_households, self.model, -1)
 
@@ -854,6 +947,17 @@ class AgentPopulationSystem(System, IDecodable, ILoggable):
             new_household[HouseholdPreferenceComponent].forage_utility = household[HouseholdPreferenceComponent].forage_utility
             new_household[HouseholdPreferenceComponent].farm_utility = household[HouseholdPreferenceComponent].farm_utility
             new_household[HouseholdPreferenceComponent].learning_rate = household[HouseholdPreferenceComponent].learning_rate
+
+        if new_household.hasComponent(HouseholdRBAdaptiveComponent):
+            new_household[HouseholdRBAdaptiveComponent].rainfall_memory = [
+                x for x in household[HouseholdRBAdaptiveComponent].rainfall_memory
+            ]
+
+            new_household[HouseholdRBAdaptiveComponent].flood_memory = [
+                x for x in household[HouseholdRBAdaptiveComponent].flood_memory
+            ]
+
+            new_household[HouseholdRBAdaptiveComponent].percentage_to_farm = household[HouseholdRBAdaptiveComponent].percentage_to_farm
 
         self.num_households += 1
 
@@ -994,6 +1098,133 @@ class AgentPopulationSystem(System, IDecodable, ILoggable):
         return AgentPopulationSystem(params['id'], params['model'], params['priority'], params['birth_rate'],
                                      params['death_rate'], params['yrs_per_move'], params['init_settlements'],
                                      params['cell_capacity'])
+
+
+class AgentRBAdaptationSystem(System, IDecodable, ILoggable):
+
+    # Cumulative Moving Average
+    rainfall_CMA = 0.0
+    flood_CMA = 0.0
+
+    per_severity_index = [[0.7, 0.2, 0.5],
+                          [0.4, 0.1, 0.1]]  # 1st is RAINFALL and 2nd is FLOOD
+
+    def __init__(self,id: str, model: Model, priority: int):
+        System.__init__(self, id, model, priority=priority)
+        IDecodable.__init__(self)
+        ILoggable.__init__(self, 'model.RBAS')
+
+    def execute(self):
+
+        # Update CMAs
+        ge_comp = self.model.environment[GlobalEnvironmentComponent]
+        rf_mean = np.mean(ge_comp.rainfall)
+        AgentRBAdaptationSystem.flood_CMA += (ge_comp.flood - AgentRBAdaptationSystem.flood_CMA) / (self.model.systemManager.timestep + 1)
+        AgentRBAdaptationSystem.rainfall_CMA += (rf_mean - AgentRBAdaptationSystem.rainfall_CMA) / (self.model.systemManager.timestep + 1)
+
+        for agent in self.model.environment.getAgents():
+
+            adapt_comp = agent[HouseholdRBAdaptiveComponent]
+
+            # Update memories with some error margin
+            adapt_comp.update_rainfall_memory(rf_mean + 0.05 * self.model.random.randrange(-1.0, 1.0) * rf_mean)
+            adapt_comp.update_flood_memory(ge_comp.flood + 0.05 * self.model.random.randrange(-1.0, 1.0) * ge_comp.flood)
+
+            # Need to build memory before making decisions.
+            if self.model.systemManager.timestep < HouseholdRBAdaptiveComponent.yrs_to_look_back:
+                return
+
+            res_comp = agent[ResourceComponent]
+            # Calculate Risk Appraisal
+
+            deltas = [
+                (sum([adapt_comp.rainfall_memory[x] * HouseholdRBAdaptiveComponent.yr_look_back_weights[x]
+                    for x in range(HouseholdRBAdaptiveComponent.yrs_to_look_back)]) + (0.01 * self.model.random.random()
+                                       ) - AgentRBAdaptationSystem.rainfall_CMA) / AgentRBAdaptationSystem.rainfall_CMA,
+                (sum([adapt_comp.flood_memory[x] * HouseholdRBAdaptiveComponent.yr_look_back_weights[x]
+                    for x in range(HouseholdRBAdaptiveComponent.yrs_to_look_back)]) + (0.01 * self.model.random.random()
+                                           ) - AgentRBAdaptationSystem.flood_CMA) / AgentRBAdaptationSystem.flood_CMA
+            ]
+
+            # If Rainfall delta is less than the flood delta, use the flood delta
+            sev_index = deltas[0] if abs(deltas[0]) > abs(deltas[1]) else deltas[1]
+            index = 0 if abs(deltas[0]) > abs(deltas[1]) else 1
+            # Set severity index
+            if sev_index < 0:
+                sev_index = 0
+            elif sev_index > 0:
+                sev_index = 2
+            else:
+                sev_index = 1
+
+            # Now we can calculate the severity value
+            severity = deltas[index] * AgentRBAdaptationSystem.per_severity_index[index][sev_index]
+
+            if severity > 1.0:
+                severity = 1.0
+            elif severity < 0.0:
+                severity = 0.0
+
+            # Calculate risk appraisal
+            risk_appraisal = 0.6 * severity + 0.4 * self.model.random.random()
+
+            # Calculate Adaptation Appraisal
+            w_age = 1.0 - (0.12 / (0.12 + (min(50.0, res_comp.average_age()) / 50.0) ** 3))
+            # Here we use household capacity
+            w_hh_size = 1.0 - (0.12 / (0.12 + (
+                    min(ResourceComponent.carrying_capacity, res_comp.able_workers()
+                        ) / ResourceComponent.carrying_capacity) ** 3))
+
+            adaptation_efficancy = 0.55 * w_age + 0.45 * w_hh_size + (0.2 - 0.3 * self.model.random.random())
+
+            w_wealth = 1.0 / (1.0 + math.exp(-3.0 * ((res_comp.resources / res_comp.required_resources()) - 0.5)))
+
+            self_efficancy = 0.3 * w_wealth + 0.6 * adapt_comp.percentage_to_farm + (0.1 - 0.2 * self.model.random.random())
+
+            adaptation_appraisal = 0.5 * (adaptation_efficancy + self_efficancy)
+
+            if adaptation_appraisal < 0.0:
+                adaptation_appraisal = 0.0
+            elif adaptation_appraisal > 1.0:
+                adaptation_appraisal = 1.0
+
+
+            # Calculate Adaptation Intention
+            # Note: There is no adaptation cost in this model
+            r = HouseholdRBAdaptiveComponent.risk_elasticity * risk_appraisal
+            p = adaptation_appraisal * (1 - HouseholdRBAdaptiveComponent.cognitive_bias)
+
+            adaptation_intention = p - r
+
+            adaptation_modifier = 0.0  # Assume Maladaptation
+            # Now determine if successful adaptation vs. maladaptation occurs
+            if adaptation_intention > HouseholdRBAdaptiveComponent.adaptation_intention_threshold:
+                # Adaptation Occurs
+                adaptation_modifier = HouseholdRBAdaptiveComponent.learning_rate
+                self.logger.info('HOUSEHOLD.ADAPTATION.INTENDED: {}'.format(agent.id))
+            elif self.model.random.random() < 0.01:  # Described as Ingenuity Change
+                adaptation_modifier = HouseholdRBAdaptiveComponent.learning_rate * self.model.random.random()
+                self.logger.info('HOUSEHOLD.ADAPTATION.INGENUITY: {}'.format(agent.id))
+
+            # Get Experience
+            h_ids = self.model.environment[SettlementRelationshipComponent].settlements[agent[HouseholdRelationshipComponent].settlementID].occupants
+            adaptation_experience_modifier = statistics.mean([
+                self.model.environment.getAgent(h)[HouseholdRBAdaptiveComponent].percentage_to_farm
+                    for h in h_ids
+            ]) * HouseholdRBAdaptiveComponent.learning_rate
+
+            # Update adaptation value
+            adapt_comp.percentage_to_farm += adaptation_modifier * adaptation_experience_modifier + 0.001 * self.model.random.random()
+
+            if adapt_comp.percentage_to_farm < 0.0:
+                adapt_comp.percentage_to_farm = 0.0
+            elif adapt_comp.percentage_to_farm > 1.0:
+                adapt_comp.percentage_to_farm = 1.0
+
+
+    @staticmethod
+    def decode(params: dict):
+        return AgentRBAdaptationSystem(params['id'], params['model'], params['priority'])
 
 
 # Collectors

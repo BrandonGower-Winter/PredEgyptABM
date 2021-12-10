@@ -376,6 +376,14 @@ def generate_household_plots(parser):
                             parser.path + '/agent_plots/resources_gini.png',
                             filter=['gini'], legend='center right')
 
+    percentage_to_farm = get_composite_property_as_dict(agent_snapshots, 'percentage_to_farm',
+                                                     [('mean', statistics.mean)], sort=True)
+
+    generate_plot_from_dict('Average Percentage to Farm over 2000 Iterations', percentage_to_farm,
+                            parser.path + '/agent_plots/percentage_to_farm.png',
+                            filter=['mean'],
+                            y_label='%', legend='center right')
+
 
 def generate_settlement_plots(parser, pixels):
     # Settlement Plots

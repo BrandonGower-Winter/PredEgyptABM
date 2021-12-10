@@ -80,7 +80,7 @@ cdef class CSoilMoistureSystemFunctions:
             is_flooded = heightmap < (water_heights + global_env_comp.flood)
 
         cdef np.ndarray[double] flooded_vals = global_env_comp.soil_depth * (0.3 + (0.4 * (1 - sand_content/100.0)))
-        cdef np.ndarray[double] non_flooded_vals = np.zeros(len(soil_vals))
+        cdef np.ndarray[double] non_flooded_vals = soil_vals.copy()
         # For Each Month
         for i in range(12):
 
@@ -90,16 +90,15 @@ cdef class CSoilMoistureSystemFunctions:
 
             # Calculate new soil values
             if PET > global_env_comp.rainfall[i]: # When Rainfall is lower than PET
-                non_flooded_vals = np.maximum(soil_vals - (PET - global_env_comp.rainfall[i]) *
+                non_flooded_vals = np.maximum(non_flooded_vals - (PET - global_env_comp.rainfall[i]) *
                         ((1 + alpha) / (1 + alpha * ((soil_vals / global_env_comp.soil_depth) ** beta))), 0)
 
             else: # When Rainfall is higher than PET
-                non_flooded_vals = soil_vals - (global_env_comp.rainfall[i] - PET)
+                non_flooded_vals = non_flooded_vals + (global_env_comp.rainfall[i] - PET)
                 non_flooded_vals = np.minimum(non_flooded_vals, flooded_vals)
 
         # Apply new soil values
         soil_vals = np.where(is_flooded, flooded_vals, non_flooded_vals)
-
         return soil_vals
 
 #######################################################################################################################
