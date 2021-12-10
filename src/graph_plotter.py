@@ -23,7 +23,7 @@ def scenario_to_curve(scenario, i):
 
 def get_scenario_data(runs: {}, scenario):
 
-    placeholder = np.zeros((667, len(runs)), dtype=float)
+    placeholder = np.zeros((2000, len(runs)), dtype=float)
 
     index = 0
     for seed in runs:
@@ -32,9 +32,9 @@ def get_scenario_data(runs: {}, scenario):
 
         index += 1
 
-    data = np.zeros((6, 667), dtype=float)
+    data = np.zeros((6, 2000), dtype=float)
 
-    for i in range(667):
+    for i in range(2000):
         data[0][i] = np.mean(placeholder[i])
         data[1][i] = np.std(placeholder[i])
         data[2][i] = (data[1][i] / data[0][i]) * 100.0
@@ -57,7 +57,7 @@ def write_plot(agent_types: [], scenario, filename, data, title: str, index: int
     ax.set_xlabel(x_axis)
     ax.set_ylabel(y_axis)
 
-    iterations = np.arange(667) * 3
+    iterations = np.arange(2000)
 
     for agent_type in agent_types:
         ax.plot(iterations, data[agent_type][scenario][index], label=agent_type)
