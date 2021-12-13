@@ -140,7 +140,7 @@ cdef class CVegetationGrowthSystemFunctions:
 
         cdef np.ndarray[double] veg_cells = df['vegetation'].to_numpy()
         cdef np.ndarray[double] moist_cells = df['moisture'].to_numpy()
-
+        cdef np.ndarray[double] slope_penalty_cells = df['slope'].to_numpy()
 
         cdef np.ndarray[double] rs = np.zeros(len(veg_cells))
 
@@ -157,9 +157,13 @@ cdef class CVegetationGrowthSystemFunctions:
         topt = CVegetationGrowthSystemFunctions.tOpt(np.mean(ge_comp.temp))
         rs *= random.uniform(0.8 - 0.0005 * (topt ** 2.0), 0.8 + 0.02 * topt)
 
+        # Apply slope penalty
+        rs *= slope_penalty_cells
+
         # Update Vegetation Values:
-        _filter = [veg_cells <= 1.0, veg_cells > 1.0]
-        choicelist = [rs * vg_comp.growth_rate,
+        cdef float filter_cond = (0.001 * vg_comp.carry_pop)
+        _filter = [veg_cells <= filter_cond, veg_cells > filter_cond]
+        choicelist = [veg_cells + rs * vg_comp.growth_rate,
                       np.clip(veg_cells - (veg_cells * vg_comp.decay_rate) + (veg_cells * rs * vg_comp.growth_rate),
                               0.0, vg_comp.carry_pop)]
         veg_cells = np.select(_filter, choicelist)

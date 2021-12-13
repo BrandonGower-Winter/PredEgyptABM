@@ -58,26 +58,31 @@ class EgyptModel(Model, IDecodable, ILoggable):
         im = Image.open(path_to_decoder_file + 'heightmap.png').convert('L')
         water_im = Image.open(path_to_decoder_file + 'rivermask.png').convert('L')
         soil_mask = Image.open(path_to_decoder_file + 'soilmask.png').convert('L')
+        slope_img = Image.open(path_to_decoder_file + 'slope_map.png').convert('L')
 
         height_diff = self.max_height - self.min_height
 
         heightmap = []
         water_map = []
         soil_map = []
+        slope_map = []
 
         for x in range(self.start_x, self.start_x + self.environment.width):
             row = []
             water_row = []
             soil_row = []
+            slope_row = []
 
             for y in range(self.start_y, self.start_y + self.environment.height):
                 row.append(self.min_height + (im.getpixel((x, y)) / 255.0 * height_diff))
                 water_row.append(water_im.getpixel((x, y)))
                 soil_row.append((soil_mask.getpixel((x, y)) / 255.0 * 100))
+                slope_row.append(slope_img.getpixel((x, y)) / 255.0)
 
             heightmap.append(row)
             water_map.append(water_row)
             soil_map.append(soil_row)
+            slope_map.append(slope_row)
 
         def elevation_generator_functor(pos, cells):
             return heightmap[pos[0]][pos[1]]
@@ -88,6 +93,9 @@ class EgyptModel(Model, IDecodable, ILoggable):
         def soil_generator(pos, cells):
             return soil_map[pos[0]][pos[1]]
 
+        def slope_generator(pos, cells):
+            return 1.0 - slope_map[pos[0]][pos[1]]
+
         self.environment.addCellComponent('height', elevation_generator_functor)
 
         logging.info('\t-Generating Watermap')
@@ -96,26 +104,9 @@ class EgyptModel(Model, IDecodable, ILoggable):
 
         # Generate slope data
 
-        #logging.info('\t-Generating Slopemap')
+        logging.info('\t-Generating Slopemap')
 
-        #def slopemap_generator(pos, cells):
-        #    id = env.discreteGridPosToID(pos[0], pos[1], self.environment.width)
-
-        #    if cells['isWater'][id]:
-        #        return 0
-        #   else:
-        #        maxSlope = 0.0  # Set base slope value
-        #        heights = self.environment.cells['height']
-        #        for neighbour in self.environment.getNeighbours(pos):
-        #            slopeVal = np.degrees(
-        #               np.arctan(
-        #                    abs(heights[neighbour] - heights[id]) / self.cellSize))
-        #            maxSlope = max(maxSlope, slopeVal)
-
-                # Set slopVal
-        #        return maxSlope
-
-        #self.environment.addCellComponent('slope', slopemap_generator)
+        self.environment.addCellComponent('slope', slope_generator)
 
         logging.info('\t-Generating Soil Data')
 

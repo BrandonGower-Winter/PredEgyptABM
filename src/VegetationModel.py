@@ -388,43 +388,6 @@ class VegetationGrowthSystem(System, IDecodable):
         topt = VegetationGrowthSystem.tOpt(temperature)
         return random.uniform(0.8 - 0.0005 * math.pow(topt, 2), 0.8 + 0.02 * topt)
 
-    @staticmethod
-    def VGProcess(df, vg_comp, sm_comp, ge_comp, random) -> ([float], [float]):
-
-        veg_cells = df['vegetation'].to_numpy()
-        moist_cells = df['moisture'].to_numpy()
-
-        cell_len = len(veg_cells) - 1
-
-        for row in df.itertuples():
-
-            if row.isWater or row.isOwned != -1:
-                continue
-
-            # Check for cell refill given neighbour's vegetation density
-            if veg_cells[row.Index] < 1.0:
-                means = []
-                if row.Index != 0:
-                    means.append(veg_cells[row.Index - 1])
-                if row.Index < cell_len:
-                    means.append(veg_cells[row.Index + 1])
-
-                mean = np.mean(means)
-                ratio = mean / vg_comp.carry_pop
-                if random.random() < ratio:
-                    veg_cells[row.Index] = mean
-
-            else:
-
-                r, moist_cells[row.Index] = CVegetationGrowthSystemFunctions.waterPenalty(moist_cells[row.Index],
-                                                                              vg_comp.ideal_moisture)
-
-                r *= CVegetationGrowthSystemFunctions.tempPenalty(np.mean(ge_comp.temp), random)
-                veg_cells[row.Index] -= CVegetationGrowthSystemFunctions.decay(veg_cells[row.Index], vg_comp.decay_rate)
-                veg_cells[row.Index] = min(veg_cells[row.Index] + (veg_cells[row.Index] * r * vg_comp.growth_rate), vg_comp.carry_pop)
-
-        return veg_cells, moist_cells
-
     def execute(self):
 
         if EgyptModel.pool is None:
@@ -444,7 +407,8 @@ class VegetationGrowthSystem(System, IDecodable):
             edge = self.model.environment.width * self.model.environment.height
             division = edge // self.model.pool_count
 
-            sub_df = self.model.environment.cells[['pos', 'height', 'moisture', 'isWater', 'vegetation', 'isOwned']]
+            sub_df = self.model.environment.cells[['pos', 'height', 'moisture', 'isWater', 'vegetation', 'isOwned',
+                                                   'slope']]
 
             for t in range(self.model.pool_count):
                 t_min = division * t

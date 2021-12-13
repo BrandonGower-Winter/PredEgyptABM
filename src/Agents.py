@@ -1068,7 +1068,8 @@ class AgentPopulationSystem(System, IDecodable, ILoggable):
                      radius=int(ResourceComponent.vision_square ** .5))
                              if self.model.environment.cells['isOwned'][x] == -1
                                  and not self.model.environment.cells['isWater'][x]
-                                 and self.model.environment.cells['isSettlement'][x] == -1]
+                                 and self.model.environment.cells['isSettlement'][x] == -1
+                                 and self.model.environment.cells['slope'][x] > 0.0]
 
             vegetation_cells = self.model.environment.cells['vegetation']
             def getVegetation(loc):
