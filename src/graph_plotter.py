@@ -97,7 +97,7 @@ def main():
             # Get all values from all runs
             reordered_data[agent_type][scenario] = get_scenario_data(data[agent_type][scenario], scenario)
 
-    for scenario in data['Traditional']:
+    for scenario in data['TRADITIONAL']:
         write_plot([a for a in data], scenario, '%s/population_%s' % (parser.store_loc, scenario), reordered_data,
                    'Total Population of Agent Types for %s averaged over 50 simulation runs.' % scenario,
                    0, 'iterations', 'Population')
