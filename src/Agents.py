@@ -1138,17 +1138,17 @@ class AgentRBAdaptationSystem(System, IDecodable, ILoggable):
             # Calculate Risk Appraisal
 
             deltas = [
-                (sum([adapt_comp.rainfall_memory[x] * HouseholdRBAdaptiveComponent.yr_look_back_weights[x]
+                abs(sum([adapt_comp.rainfall_memory[x] * HouseholdRBAdaptiveComponent.yr_look_back_weights[x]
                     for x in range(HouseholdRBAdaptiveComponent.yrs_to_look_back)]) + (0.01 * self.model.random.random()
                                        ) - AgentRBAdaptationSystem.rainfall_CMA) / AgentRBAdaptationSystem.rainfall_CMA,
-                (sum([adapt_comp.flood_memory[x] * HouseholdRBAdaptiveComponent.yr_look_back_weights[x]
+                abs(sum([adapt_comp.flood_memory[x] * HouseholdRBAdaptiveComponent.yr_look_back_weights[x]
                     for x in range(HouseholdRBAdaptiveComponent.yrs_to_look_back)]) + (0.01 * self.model.random.random()
                                            ) - AgentRBAdaptationSystem.flood_CMA) / AgentRBAdaptationSystem.flood_CMA
             ]
 
             # If Rainfall delta is less than the flood delta, use the flood delta
-            sev_index = deltas[0] if abs(deltas[0]) > abs(deltas[1]) else deltas[1]
-            index = 0 if abs(deltas[0]) > abs(deltas[1]) else 1
+            sev_index = deltas[0] if deltas[0] > deltas[1] else deltas[1]
+            index = 0 if deltas[0] > deltas[1] else 1
             # Set severity index
             if sev_index < 0:
                 sev_index = 0
