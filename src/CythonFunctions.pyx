@@ -257,7 +257,8 @@ cdef class CAgentResourceAcquisitionFunctions:
     @staticmethod
     def farm(int patch_id, int workers, (int, int) house_pos, (int, int) coords, float temperature, int max_acquisition_distance,
              int moisture_consumption_rate, int crop_gestation_period, int farming_production_rate, int farms_per_patch,
-             np.ndarray height_cells, np.ndarray moisture_cells, object sm_comp, object ge_comp, object random) -> float:
+             np.ndarray height_cells, np.ndarray moisture_cells, np.ndarray slope_cells,
+             object sm_comp, object ge_comp, object random) -> float:
         # Calculate penalties
 
         cdef int dst
@@ -276,7 +277,7 @@ cdef class CAgentResourceAcquisitionFunctions:
             # Adjust soil moisture if cell not flooded
             moisture_cells[patch_id] = moisture_remain
 
-        crop_yield = farming_production_rate * wtr_penalty * tmp_penalty * (workers / farms_per_patch)
+        crop_yield = farming_production_rate * wtr_penalty * tmp_penalty * slope_cells[patch_id] * (workers / farms_per_patch)
 
         return int(crop_yield * dst_penalty)
 

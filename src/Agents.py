@@ -545,38 +545,6 @@ class AgentResourceAcquisitionSystem(System, IDecodable, ILoggable):
         if len(household[ResourceComponent].ownedLand) < target:
             self.acquire_land(household, target)
 
-    @staticmethod
-    def farm(patch_id: int, workers: int, house_pos: (int, int), coords: (int, int), temperature: float, max_acquisition_distance,
-             moisture_consumption_rate, crop_gestation_period, farming_production_rate, farms_per_patch,
-             height_cells, moisture_cells, sm_comp, ge_comp, random) -> float:
-        # Calculate penalties
-
-        dst = max(abs(coords[0] - house_pos[0]), abs(coords[1] - house_pos[1]))
-        dst_penalty = 1.0 if dst <= max_acquisition_distance else 1.0 / (dst - max_acquisition_distance)
-
-        tmp_Penalty = CVegetationGrowthSystemFunctions.tempPenalty(temperature, random)
-
-        wtr_penalty, moisture_remain = CVegetationGrowthSystemFunctions.waterPenalty(moisture_cells[patch_id],
-                                        moisture_consumption_rate/crop_gestation_period)
-        # Calculate Crop Yield
-
-        if not SoilMoistureSystem.is_flooded(height_cells[patch_id], coords, sm_comp, ge_comp):
-            # Adjust soil moisture if cell not flooded
-            moisture_cells[patch_id] = moisture_remain
-
-        crop_yield = farming_production_rate * wtr_penalty * tmp_Penalty * (workers/farms_per_patch)
-
-        return int(crop_yield * dst_penalty)
-
-    @staticmethod
-    def forage(patch_id, workers, vegetation_cells, consumption_rate, forage_multiplier, per_patch) -> float:
-        veg_diff = max(vegetation_cells[patch_id]
-                       - consumption_rate * (workers / per_patch), 0.0)
-
-        farmed_res = vegetation_cells[patch_id] - veg_diff
-        vegetation_cells[patch_id] = veg_diff
-        return farmed_res * forage_multiplier
-
     def execute(self):
         # Instantiate numpy arrays of environment dataframe
 
@@ -587,6 +555,7 @@ class AgentResourceAcquisitionSystem(System, IDecodable, ILoggable):
         moisture_cells = self.model.environment.cells['moisture'].to_numpy()
         height_cells = self.model.environment.cells['height'].to_numpy()
         position_cells = self.model.environment.cells['pos']  # Not passed to Cython so it doesn't need to be np.array
+        slope_cells = self.model.environment.cells['slope'].to_numpy()
 
         def getVegetation(location):  # Function used to sort land patches by vegetation density.
             return vegetation_cells[location]
@@ -672,7 +641,8 @@ class AgentResourceAcquisitionSystem(System, IDecodable, ILoggable):
                                     AgentResourceAcquisitionSystem.crop_gestation_period,
                                     AgentResourceAcquisitionSystem.farming_production_rate,
                                     AgentResourceAcquisitionSystem.farms_per_patch,
-                                    height_cells, moisture_cells, self.model.environment[SoilMoistureComponent],
+                                    height_cells, moisture_cells, slope_cells,
+                                    self.model.environment[SoilMoistureComponent],
                                     self.model.environment[GlobalEnvironmentComponent], self.model.random)
 
                     household[ResourceComponent].resources += new_resources
