@@ -97,7 +97,7 @@
         "moisture_consumption_rate": 270,
         "crop_gestation_period": 1,
         "farming_production_rate": 6000,
-        "forage_consumption_rate": 3500,
+        "forage_consumption_rate": 3125,
         "forage_production_multiplier": 1,
         "delay_factor": 1,
         "max_farmable_slope" : 45
