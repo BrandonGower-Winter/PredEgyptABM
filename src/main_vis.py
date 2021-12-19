@@ -293,8 +293,8 @@ def xtent_map(settlement_data : [], pixels):
     ret_data = []
     pos_data = []
     # Generating positions:
-    for x in range(parser.width):
-        for y in range(parser.height):
+    for y in range(parser.height):
+        for x in range(parser.width):
             pos_data.append((x, y))
 
     count = 1
@@ -302,7 +302,7 @@ def xtent_map(settlement_data : [], pixels):
         print('Iteration: {}'.format(count))
         it_data = []
         for y in range(parser.height):
-            row = []
+            it_row = []
             for x in range(parser.width):
 
                 ws = np.zeros((len(it_set)))
@@ -317,16 +317,17 @@ def xtent_map(settlement_data : [], pixels):
                     n_y = pos_data[it_set[i]['pos'][0]][1]
                     ds[i] = math.sqrt(((x - n_x) ** 2) + ((y - n_y) ** 2))
 
-                ds = ds * 1700
-                dst = CAgentUtilityFunctions.xtent_distribution(ws, ds, 1, 1.5)
+                ds = ds * 2000  # Cell Size
+                dst = CAgentUtilityFunctions.xtent_distribution(ws, ds, 0.75, 1.5)
 
                 iSettlement = np.argmax(dst)
 
-                row.append(it_set[iSettlement]['id']+1)
+                it_row.append(it_set[iSettlement]['id']+1 if dst[iSettlement] > 0.0 else 0)
 
-            it_data.append(row)
+            it_data.append(it_row)
+
         ret_data.append(it_data)
-        count +=1
+        count += 1
 
     return ret_data
 
@@ -376,6 +377,17 @@ def generate_household_plots(parser):
                             parser.path + '/agent_plots/resources_gini.png',
                             filter=['gini'], legend='center right')
 
+    transfer_dict = {}
+    transfer_dict['Peer Transfer'] = get_composite_property_as_dict(agent_snapshots, 'peer_chance',
+                                               [('mean', statistics.mean)], sort=True)['mean']
+    transfer_dict['Subordinate Transfer'] = get_composite_property_as_dict(agent_snapshots, 'sub_chance',
+                                                                    [('mean', statistics.mean)], sort=True)['mean']
+    transfer_dict['iterations'] = np.arange(len(transfer_dict['Peer Transfer']))
+
+    generate_plot_from_dict('Average Transfer Percentage of Agents over 2000 iterations', transfer_dict,
+                            parser.path + '/agent_plots/transfer_chance.png',
+                            y_label='Probability', legend='center left')
+
     percentage_to_farm = get_composite_property_as_dict(agent_snapshots, 'percentage_to_farm',
                                                      [('mean', statistics.mean)], sort=True)
 
@@ -414,6 +426,10 @@ def generate_settlement_plots(parser, pixels):
                             parser.path + '/settlement_plots/resources_gini.png',
                             filter=['gini'], legend='center right')
 
+    xtent_arr = xtent_map(settlement_snapshots, pixels)
+    Animate.generateAnimat('Xtent model showing Settlement Territory', xtent_arr, fps=100, vmin=0, vmax=300,
+                           filename=parser.path + '/settlement_plots/xtent_animat')
+
 
 def generate_environment_plots(parser, pixels):
 
@@ -442,6 +458,17 @@ def generate_log_plots(parser):
 
     generate_plot_from_log_list('Household Farm and Forage actions over 2000 iterations', log_list,
                                 parser.path + '/log_plots/FarmForage.png', ['HOUSEHOLD.FARM', 'HOUSEHOLD.FORAGE'],
+                                y_label='Number of actions', default_val=0, legend='center left')
+    generate_plot_from_log_list("House Resource Transfer Actions over 2000 iterations", log_list,
+                                parser.path + '/log_plots/ResourceTransfer.png',
+                                ['HOUSEHOLD.RESOURCES.TRANSFER.SUCCESS.PEER',
+                                 'HOUSEHOLD.RESOURCES.TRANSFER.SUCCESS.AUTH',
+                                 'HOUSEHOLD.RESOURCES.TRANSFER.SUCCESS.SUB',
+                                 'HOUSEHOLD.RESOURCES.TRANSFER.FAIL.PEER',
+                                 'HOUSEHOLD.RESOURCES.TRANSFER.FAIL.AUTH',
+                                 'HOUSEHOLD.RESOURCES.TRANSFER.FAIL.SUB',
+                                 'HOUSEHOLD.RESOURCES.TRANSFER.REJECT.PEER',
+                                 'HOUSEHOLD.RESOURCES.TRANSFER.REJECT.AUTH'],
                                 y_label='Number of actions', default_val=0, legend='center left')
 
 
@@ -523,10 +550,10 @@ if __name__ == '__main__':
         for x in range(parser.width):
             pixels.append(im.getpixel((x, y)) / 255.0)
 
-    generate_environment_plots(parser, pixels)
-    generate_household_plots(parser)
     generate_settlement_plots(parser, pixels)
     generate_log_plots(parser)
+    generate_environment_plots(parser, pixels)
+    generate_household_plots(parser)
 
     #other_stuff()
 

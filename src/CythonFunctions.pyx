@@ -339,4 +339,5 @@ cdef class CAgentUtilityFunctions:
         cdef np.ndarray result
         result = (ws ** b) - m * ds
 
-        return (result - result.min()) / (result.max() - result.min())
+        return result / np.abs(result).sum()
+        #return (result - result.min()) / (result.max() - result.min())

@@ -85,6 +85,10 @@ class HouseholdRelationshipComponent(Component):
         self.settlementID = settlementID
         self.load = 0
 
+        # Randomize the resource trading personalities
+        self.peer_resource_transfer_chance = self.model.random.random()
+        self.sub_resource_transfer_chance = self.model.random.random()
+
     def is_aquaintance(self, h):
         """Returns true if household h is in the same settlement as household h"""
         return self.settlementID == h[HouseholdRelationshipComponent].settlementID
@@ -92,11 +96,18 @@ class HouseholdRelationshipComponent(Component):
     def is_auth(self, h):
         """Returns true if household self has an authority relationship over household h"""
 
-        if h is self.agent or self.load == 0:
+        s_status = self.agent.social_status()
+        if h is self.agent or s_status == 0:
             return False
 
-        h_load = h[HouseholdRelationshipComponent].load
-        return self.is_aquaintance(h) and ((self.load - h_load)/max(self.load, h_load) - HouseholdRelationshipComponent.load_difference) > 0
+        h_status = h.social_status()
+        return self.is_aquaintance(h) and ((s_status - h_status)/max(s_status, h_status)
+                                           > HouseholdRelationshipComponent.load_difference)
+
+    def is_sub(self, h):
+        """Returns true if household self has a subordinate relationship with household h"""
+        # Household self is a subordinate if the household h has an auth relationship
+        return h[HouseholdRelationshipComponent].is_auth(self.agent)
 
     def is_peer(self, h):
         """Returns true if household self has a peer relationship with household h"""
@@ -104,12 +115,14 @@ class HouseholdRelationshipComponent(Component):
         if h is self.agent or self.is_auth(h):
             return False
 
-        h_load = h[HouseholdRelationshipComponent].load
+        h_status = h.social_status()
+        s_status = self.agent.social_status()
 
-        if h_load == 0 and self.load == 0:
+        if h_status == 0 and s_status == 0:
             return True  # Ensure no division by error
 
-        return self.is_aquaintance(h) and (abs(self.load - h_load)/max(self.load, h_load) + HouseholdRelationshipComponent.load_difference) > 0
+        return self.is_aquaintance(h) and abs(s_status - h_status)/max(s_status, h_status) \
+               < HouseholdRelationshipComponent.load_difference
 
 
 class HouseholdPreferenceComponent(Component):
@@ -146,7 +159,7 @@ class HouseholdRBAdaptiveComponent(Component):
         self.rainfall_memory = [0.0] * HouseholdRBAdaptiveComponent.yrs_to_look_back
         self.flood_memory = [0.0] * HouseholdRBAdaptiveComponent.yrs_to_look_back
 
-        self.percentage_to_farm = 0.0 # Probability of Agent choosing to farm
+        self.percentage_to_farm = 0.0  # Probability of Agent choosing to farm
 
     def update_flood_memory(self, val: float):
         self.flood_memory.append(val)
@@ -192,6 +205,10 @@ class Household(Agent, IDecodable):
         return 'Household {}:\n\tOccupants: {}\n\tResources: {}\n\tLoad: {}'.format(
             self.id, len(self[ResourceComponent].occupants), self[ResourceComponent].resources, self[HouseholdRelationshipComponent].load)
 
+    def social_status(self):
+        """ Returns the agents social status which is the sum of its resources and load. """
+        return self[ResourceComponent].resources + self[HouseholdRelationshipComponent].load
+
     def jsonify(self) -> dict:
         created_dict = {}
         created_dict['id'] = self.id
@@ -205,6 +222,8 @@ class Household(Agent, IDecodable):
 
         created_dict['settlement_id'] = self[HouseholdRelationshipComponent].settlementID
         created_dict['load'] = self[HouseholdRelationshipComponent].load
+        created_dict['peer_chance'] = self[HouseholdRelationshipComponent].peer_resource_transfer_chance
+        created_dict['sub_chance'] = self[HouseholdRelationshipComponent].sub_resource_transfer_chance
 
         return created_dict
 
@@ -402,6 +421,12 @@ class SettlementRelationshipComponent(Component):
                    if self.model.environment.getAgent(h).hasComponent(HouseholdPreferenceComponent)]
                    ) / len(self.settlements[settlementID].occupants)
 
+    def getSettlementPercentageToFarm(self, settlementID):
+        return sum([self.model.environment.getAgent(h)[HouseholdRBAdaptiveComponent].percentage_to_farm for h in
+                    self.settlements[settlementID].occupants
+                    if self.model.environment.getAgent(h).hasComponent(HouseholdRBAdaptiveComponent)]
+                   ) / len(self.settlements[settlementID].occupants)
+
     def getAverageSettlementWealth(self, settlementID):
         return self.getSettlementWealth(settlementID) / len(self.settlements[settlementID].occupants)
 
@@ -422,6 +447,11 @@ class SettlementRelationshipComponent(Component):
         """Returns all of the households which have an auth relationship over household h"""
         return [self.model.environment.getAgent(x) for x in self.settlements[h[HouseholdRelationshipComponent].settlementID].occupants
                 if self.model.environment.getAgent(x)[HouseholdRelationshipComponent].is_auth(h)]
+
+    def get_all_sub(self, h: Household):
+        """Returns all households which have a subordinate relationship over household h"""
+        return [self.model.environment.getAgent(x) for x in self.settlements[h[HouseholdRelationshipComponent].settlementID].occupants
+                if self.model.environment.getAgent(x)[HouseholdRelationshipComponent].is_sub(h)]
 
     def get_all_peer(self, h: Household):
         """Returns all of the households which have a peer relationship over household h"""
@@ -687,7 +717,7 @@ class AgentResourceTransferSystem(System, IDecodable, ILoggable):
 
     @staticmethod
     def decode(params: dict):
-        return AgentResourceTransferSystem(params['id'],params['model'], params['priority'], params['load_decay'])
+        return AgentResourceTransferSystem(params['id'], params['model'], params['priority'], params['load_decay'])
 
     def execute(self):
 
@@ -714,19 +744,24 @@ class AgentResourceTransferSystem(System, IDecodable, ILoggable):
                         provider = self.model.random.choice(providers)
                         providers.remove(provider)
 
-                        resource_given = AgentResourceTransferSystem.ask_for_resources(provider, resources_needed)
-                        household[ResourceComponent].resources += resource_given
+                        if self.model.random.random() < provider[HouseholdRelationshipComponent].sub_resource_transfer_chance:
+                            resource_given = AgentResourceTransferSystem.ask_for_resources(provider, resources_needed)
+                            household[ResourceComponent].resources += resource_given
 
-                        if resource_given > 0:
-                            self.logger.info('HOUSEHOLD.RESOURCES.TRANSFER.AUTH: {} {} {}'.format(
-                                household.id, provider.id, resource_given))
+                            if resource_given > 0:
+                                self.logger.info('HOUSEHOLD.RESOURCES.TRANSFER.SUCCESS.AUTH: {} {} {}'.format(
+                                    household.id, provider.id, resource_given))
+                            else:
+                                self.logger.info('HOUSEHOLD.RESOURCES.TRANSFER.FAIL.AUTH: {} {}'.format(
+                                    household.id, provider.id
+                                ))
+
+                            # Update amount of resources needed
+                            resources_needed -= resource_given
                         else:
-                            self.logger.info('HOUSEHOLD.RESOURCES.TRANSFER.FAIL.AUTH: {} {}'.format(
+                            self.logger.info('HOUSEHOLD.RESOURCES.TRANSFER.REJECT.AUTH: {} {}'.format(
                                 household.id, provider.id
                             ))
-
-                        # Update amount of resources needed
-                        resources_needed -= resource_given
 
                     if resources_needed > 0:
                         # Get peers as secondary providers
@@ -736,14 +771,42 @@ class AgentResourceTransferSystem(System, IDecodable, ILoggable):
                             provider = self.model.random.choice(providers)
                             providers.remove(provider)
 
+                            if self.model.random.random() < provider[HouseholdRelationshipComponent].peer_resource_transfer_chance:
+
+                                resource_given = AgentResourceTransferSystem.ask_for_resources(provider, resources_needed)
+                                household[ResourceComponent].resources += resource_given
+
+                                if resource_given > 0:
+                                    self.logger.info('HOUSEHOLD.RESOURCES.TRANSFER.SUCCESS.PEER: {} {} {}'.format(
+                                        household.id, provider.id, resource_given))
+                                else:
+                                    self.logger.info('HOUSEHOLD.RESOURCES.TRANSFER.FAIL.PEER: {} {}'.format(
+                                        household.id, provider.id))
+
+                                # Update amount of resources needed
+                                resources_needed -= resource_given
+                            else:
+                                self.logger.info('HOUSEHOLD.RESOURCES.TRANSFER.REJECT.PEER: {} {}'.format(
+                                    household.id, provider.id))
+
+                    if resources_needed > 0:
+                        # Get subordinates as tertiary providers
+                        providers = self.model.environment[SettlementRelationshipComponent].get_all_sub(household)
+
+                        while len(providers) != 0 and resources_needed > 0:
+                            provider = self.model.random.choice(providers)
+                            providers.remove(provider)
+
+                            # Subordinates cannot say no to giving away excess resources
+
                             resource_given = AgentResourceTransferSystem.ask_for_resources(provider, resources_needed)
                             household[ResourceComponent].resources += resource_given
 
                             if resource_given > 0:
-                                self.logger.info('HOUSEHOLD.RESOURCES.TRANSFER.PEER: {} {} {}'.format(
+                                self.logger.info('HOUSEHOLD.RESOURCES.TRANSFER.SUCCESS.SUB: {} {} {}'.format(
                                     household.id, provider.id, resource_given))
                             else:
-                                self.logger.info('HOUSEHOLD.RESOURCES.TRANSFER.FAIL.PEER: {} {}'.format(
+                                self.logger.info('HOUSEHOLD.RESOURCES.TRANSFER.FAIL.SUB: {} {}'.format(
                                     household.id, provider.id))
 
                             # Update amount of resources needed
@@ -910,6 +973,12 @@ class AgentPopulationSystem(System, IDecodable, ILoggable):
             household[ResourceComponent].move_occupant(id, new_household)
             children.remove(id)
             child_count -= 1
+
+        # Set Household Resource Trading Personality Types
+        new_household[HouseholdRelationshipComponent].peer_resource_transfer_chance = household[
+            HouseholdRelationshipComponent].peer_resource_transfer_chance
+        new_household[HouseholdRelationshipComponent].sub_resource_transfer_chance = household[
+            HouseholdRelationshipComponent].sub_resource_transfer_chance
 
         # Set Preference
         if new_household.hasComponent(HouseholdPreferenceComponent):
@@ -1159,7 +1228,6 @@ class AgentRBAdaptationSystem(System, IDecodable, ILoggable):
             elif adaptation_appraisal > 1.0:
                 adaptation_appraisal = 1.0
 
-
             # Calculate Adaptation Intention
             # Note: There is no adaptation cost in this model
             r = HouseholdRBAdaptiveComponent.risk_elasticity * risk_appraisal
@@ -1179,10 +1247,19 @@ class AgentRBAdaptationSystem(System, IDecodable, ILoggable):
 
             # Get Experience
             h_ids = self.model.environment[SettlementRelationshipComponent].settlements[agent[HouseholdRelationshipComponent].settlementID].occupants
+            hs = [self.model.environment.getAgent(h) for h in h_ids]
+
             adaptation_experience_modifier = statistics.mean([
-                self.model.environment.getAgent(h)[HouseholdRBAdaptiveComponent].percentage_to_farm
-                    for h in h_ids
+                h[HouseholdRBAdaptiveComponent].percentage_to_farm for h in hs
             ]) * HouseholdRBAdaptiveComponent.learning_rate
+
+            peer_trade_modifier = (statistics.mean(
+                [h[HouseholdRelationshipComponent].peer_resource_transfer_chance for h in hs]
+            ) - agent[HouseholdRelationshipComponent].peer_resource_transfer_chance) * HouseholdRBAdaptiveComponent.learning_rate
+
+            sub_trade_modifier = (statistics.mean(
+                [h[HouseholdRelationshipComponent].sub_resource_transfer_chance for h in hs]
+            ) - agent[HouseholdRelationshipComponent].sub_resource_transfer_chance) * HouseholdRBAdaptiveComponent.learning_rate
 
             # Update adaptation value
             adapt_comp.percentage_to_farm += adaptation_modifier * adaptation_experience_modifier + 0.001 * self.model.random.random()
@@ -1192,6 +1269,8 @@ class AgentRBAdaptationSystem(System, IDecodable, ILoggable):
             elif adapt_comp.percentage_to_farm > 1.0:
                 adapt_comp.percentage_to_farm = 1.0
 
+            agent[HouseholdRelationshipComponent].peer_resource_transfer_chance += peer_trade_modifier
+            agent[HouseholdRelationshipComponent].sub_resource_transfer_chance += sub_trade_modifier
 
     @staticmethod
     def decode(params: dict):
@@ -1338,12 +1417,14 @@ class SettlementSnapshotCollector(Collector):
         toWrite = []
 
         for sid in self.model.environment[SettlementRelationshipComponent].settlements:
-            generated_dict = self.model.environment[SettlementRelationshipComponent].settlements[sid].jsonify()
-            generated_dict['wealth'] = self.model.environment[SettlementRelationshipComponent].getSettlementWealth(sid)
-            generated_dict['load'] = self.model.environment[SettlementRelationshipComponent].getSettlementLoad(sid)
-            generated_dict['population'] = self.model.environment[SettlementRelationshipComponent].getSettlementPopulation(sid)
-            generated_dict['farm_utility'] = self.model.environment[SettlementRelationshipComponent].getSettlementFarmUtility(sid)
-            generated_dict['forage_utility'] = self.model.environment[SettlementRelationshipComponent].getSettlementForageUtility(sid)
+            srComp = self.model.environment[SettlementRelationshipComponent]
+            generated_dict = srComp.settlements[sid].jsonify()
+            generated_dict['wealth'] = srComp.getSettlementWealth(sid)
+            generated_dict['load'] = srComp.getSettlementLoad(sid)
+            generated_dict['population'] = srComp.getSettlementPopulation(sid)
+            generated_dict['farm_utility'] = srComp.getSettlementFarmUtility(sid)
+            generated_dict['forage_utility'] = srComp.getSettlementForageUtility(sid)
+            generated_dict['percentage_to_farm'] = srComp.getSettlementPercentageToFarm(sid)
             toWrite.append(generated_dict)
 
         with open(self.file_name + '/iteration_{}.json'.format(self.model.systemManager.timestep), 'w') as outfile:
