@@ -414,7 +414,7 @@ def generate_settlement_plots(parser, pixels):
 
     settlement_snapshots = load_json_files(parser.path + '/settlements')
 
-    settlement_dict = get_composite_property_as_dict(settlement_snapshots, 'wealth',
+    settlement_dict = get_composite_property_as_dict(settlement_snapshots, ['wealth'],
                                                      [('mean', statistics.mean),
                                                       ('median', statistics.median),
                                                       ('min', min),
