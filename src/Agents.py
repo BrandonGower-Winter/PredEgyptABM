@@ -1248,18 +1248,33 @@ class AgentRBAdaptationSystem(System, IDecodable, ILoggable):
             # Get Experience
             h_ids = self.model.environment[SettlementRelationshipComponent].settlements[agent[HouseholdRelationshipComponent].settlementID].occupants
             hs = [self.model.environment.getAgent(h) for h in h_ids]
+            h_social_status = [h.social_status() for h in hs]
 
             adaptation_experience_modifier = statistics.mean([
                 h[HouseholdRBAdaptiveComponent].percentage_to_farm for h in hs
             ]) * HouseholdRBAdaptiveComponent.learning_rate
 
-            peer_trade_modifier = (statistics.mean(
-                [h[HouseholdRelationshipComponent].peer_resource_transfer_chance for h in hs]
-            ) - agent[HouseholdRelationshipComponent].peer_resource_transfer_chance) * HouseholdRBAdaptiveComponent.learning_rate
+            total_wealth = sum(h_social_status)
+            ws = [h / total_wealth if total_wealth != 0 else 0.0 for h in h_social_status]
+            ws_sum = sum(ws)
 
-            sub_trade_modifier = (statistics.mean(
-                [h[HouseholdRelationshipComponent].sub_resource_transfer_chance for h in hs]
-            ) - agent[HouseholdRelationshipComponent].sub_resource_transfer_chance) * HouseholdRBAdaptiveComponent.learning_rate
+            if ws_sum != 0:  # Do not update anything if the entire settlement has no value
+                peer_trade_modifier = (sum(
+                    [hs[i][HouseholdRelationshipComponent].peer_resource_transfer_chance * ws[i]
+                        for i in range(len(hs))
+                    ]
+                )
+                / ws_sum - agent[HouseholdRelationshipComponent].peer_resource_transfer_chance) * HouseholdRBAdaptiveComponent.learning_rate
+
+                sub_trade_modifier = (sum(
+                    [hs[i][HouseholdRelationshipComponent].sub_resource_transfer_chance * ws[i]
+                        for i in range(len(hs))
+                    ]
+                )
+                / ws_sum - agent[HouseholdRelationshipComponent].sub_resource_transfer_chance) * HouseholdRBAdaptiveComponent.learning_rate
+
+                agent[HouseholdRelationshipComponent].peer_resource_transfer_chance += peer_trade_modifier
+                agent[HouseholdRelationshipComponent].sub_resource_transfer_chance += sub_trade_modifier
 
             # Update adaptation value
             adapt_comp.percentage_to_farm += adaptation_modifier * adaptation_experience_modifier + 0.001 * self.model.random.random()
@@ -1269,8 +1284,7 @@ class AgentRBAdaptationSystem(System, IDecodable, ILoggable):
             elif adapt_comp.percentage_to_farm > 1.0:
                 adapt_comp.percentage_to_farm = 1.0
 
-            agent[HouseholdRelationshipComponent].peer_resource_transfer_chance += peer_trade_modifier
-            agent[HouseholdRelationshipComponent].sub_resource_transfer_chance += sub_trade_modifier
+
 
     @staticmethod
     def decode(params: dict):

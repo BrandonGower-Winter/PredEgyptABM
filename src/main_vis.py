@@ -92,9 +92,12 @@ def reformat_snapshots_to_per_entity_dicts(snapshots: [[dict]], id_str: str = 'i
     return agent_data
 
 
-def generate_composite_val(prop: str, snapshot: dict, comp_func, sort: bool = False):
+def generate_composite_val(props: [str], snapshot: dict, comp_func, sort: bool = False):
 
-    ls = [agent[prop] for agent in snapshot]
+    if len(props) > 1:
+        ls = [[agent[prop] for prop in props] for agent in snapshot]
+    else:
+        ls = [agent[props[0]] for agent in snapshot]
 
     if len(ls) == 0:
         return 0
@@ -105,7 +108,7 @@ def generate_composite_val(prop: str, snapshot: dict, comp_func, sort: bool = Fa
     return comp_func(ls)
 
 
-def get_composite_property_as_dict(snapshots: [[dict]], property: str, comp_funcs: [(str, any)],
+def get_composite_property_as_dict(snapshots: [[dict]], props: [str], comp_funcs: [(str, any)],
                                    over_range: (int, int) = (0, -1), sort: bool = False) -> dict:
 
     prop_dict = {'iterations': []}
@@ -115,7 +118,7 @@ def get_composite_property_as_dict(snapshots: [[dict]], property: str, comp_func
     for i in range(over_range[0], over_range[1]):
         for func in comp_funcs:
 
-            val = generate_composite_val(property, snapshots[i], func[1], sort)
+            val = generate_composite_val(props, snapshots[i], func[1], sort)
 
             if func[0] in prop_dict:
                 prop_dict[func[0]].append(val)
@@ -332,13 +335,20 @@ def xtent_map(settlement_data : [], pixels):
     return ret_data
 
 
+def household_social_status_weighted_mean(data: []):
+
+    total_social_status = sum([point[1] + point[2] for point in data])
+    w_sum = sum([(point[1] + point[2]) / total_social_status for point in data])
+    return sum([point[0] * (point[1] + point[2]) / total_social_status for point in data]) / w_sum
+
+
 def generate_household_plots(parser):
     agent_snapshots = load_json_files(parser.path + '/agents')
 
     if not os.path.isdir(parser.path + '/agent_plots'):
         os.mkdir(parser.path + '/agent_plots')
 
-    population_dict = get_composite_property_as_dict(agent_snapshots, 'resources',
+    population_dict = get_composite_property_as_dict(agent_snapshots, ['resources'],
                                                      [('mean', statistics.mean),
                                                       ('median', statistics.median),
                                                       ('min', min),
@@ -346,7 +356,7 @@ def generate_household_plots(parser):
                                                       ('total', sum),
                                                       ('gini', gini)], sort=True)
 
-    household = get_composite_property_as_dict(agent_snapshots, 'occupants',
+    household = get_composite_property_as_dict(agent_snapshots, ['occupants'],
                                                      [('mean', statistics.mean),
                                                       ('median', statistics.median),
                                                       ('min', min),
@@ -378,17 +388,17 @@ def generate_household_plots(parser):
                             filter=['gini'], legend='center right')
 
     transfer_dict = {}
-    transfer_dict['Peer Transfer'] = get_composite_property_as_dict(agent_snapshots, 'peer_chance',
-                                               [('mean', statistics.mean)], sort=True)['mean']
-    transfer_dict['Subordinate Transfer'] = get_composite_property_as_dict(agent_snapshots, 'sub_chance',
-                                                                    [('mean', statistics.mean)], sort=True)['mean']
+    transfer_dict['Peer Transfer'] = get_composite_property_as_dict(agent_snapshots, ['peer_chance', 'resources', 'load'],
+                                     [('mean', household_social_status_weighted_mean)], sort=True)['mean']
+    transfer_dict['Subordinate Transfer'] = get_composite_property_as_dict(agent_snapshots, ['sub_chance', 'resources', 'load'],
+                                     [('mean', household_social_status_weighted_mean)], sort=True)['mean']
     transfer_dict['iterations'] = np.arange(len(transfer_dict['Peer Transfer']))
 
     generate_plot_from_dict('Average Transfer Percentage of Agents over 2000 iterations', transfer_dict,
                             parser.path + '/agent_plots/transfer_chance.png',
                             y_label='Probability', legend='center left')
 
-    percentage_to_farm = get_composite_property_as_dict(agent_snapshots, 'percentage_to_farm',
+    percentage_to_farm = get_composite_property_as_dict(agent_snapshots, ['percentage_to_farm'],
                                                      [('mean', statistics.mean)], sort=True)
 
     generate_plot_from_dict('Average Percentage to Farm over 2000 Iterations', percentage_to_farm,
@@ -556,5 +566,4 @@ if __name__ == '__main__':
     generate_household_plots(parser)
 
     #other_stuff()
-
     #dynamic_farm_animat(parser, pixels)
