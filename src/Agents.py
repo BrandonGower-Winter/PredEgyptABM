@@ -1162,127 +1162,138 @@ class AgentRBAdaptationSystem(System, IDecodable, ILoggable):
         AgentRBAdaptationSystem.flood_CMA += (ge_comp.flood - AgentRBAdaptationSystem.flood_CMA) / (self.model.systemManager.timestep + 1)
         AgentRBAdaptationSystem.rainfall_CMA += (rf_mean - AgentRBAdaptationSystem.rainfall_CMA) / (self.model.systemManager.timestep + 1)
 
-        for agent in self.model.environment.getAgents():
+        for settlement in [self.model.environment[SettlementRelationshipComponent].settlements[s] for s in
+                           self.model.environment[SettlementRelationshipComponent].settlements]:
 
-            adapt_comp = agent[HouseholdRBAdaptiveComponent]
-
-            # Update memories with some error margin
-            adapt_comp.update_rainfall_memory(rf_mean + 0.05 * self.model.random.randrange(-1.0, 1.0) * rf_mean)
-            adapt_comp.update_flood_memory(ge_comp.flood + 0.05 * self.model.random.randrange(-1.0, 1.0) * ge_comp.flood)
-
-            # Need to build memory before making decisions.
-            if self.model.systemManager.timestep < HouseholdRBAdaptiveComponent.yrs_to_look_back:
-                return
-
-            res_comp = agent[ResourceComponent]
-            # Calculate Risk Appraisal
-
-            deltas = [
-                abs(sum([adapt_comp.rainfall_memory[x] * HouseholdRBAdaptiveComponent.yr_look_back_weights[x]
-                    for x in range(HouseholdRBAdaptiveComponent.yrs_to_look_back)]) + (0.01 * self.model.random.random()
-                                       ) - AgentRBAdaptationSystem.rainfall_CMA) / AgentRBAdaptationSystem.rainfall_CMA,
-                abs(sum([adapt_comp.flood_memory[x] * HouseholdRBAdaptiveComponent.yr_look_back_weights[x]
-                    for x in range(HouseholdRBAdaptiveComponent.yrs_to_look_back)]) + (0.01 * self.model.random.random()
-                                           ) - AgentRBAdaptationSystem.flood_CMA) / AgentRBAdaptationSystem.flood_CMA
-            ]
-
-            # If Rainfall delta is less than the flood delta, use the flood delta
-            sev_index = deltas[0] if deltas[0] > deltas[1] else deltas[1]
-            index = 0 if deltas[0] > deltas[1] else 1
-            # Set severity index
-            if sev_index < 0:
-                sev_index = 0
-            elif sev_index > 0:
-                sev_index = 2
-            else:
-                sev_index = 1
-
-            # Now we can calculate the severity value
-            severity = deltas[index] * AgentRBAdaptationSystem.per_severity_index[index][sev_index]
-
-            if severity > 1.0:
-                severity = 1.0
-            elif severity < 0.0:
-                severity = 0.0
-
-            # Calculate risk appraisal
-            risk_appraisal = 0.6 * severity + 0.4 * self.model.random.random()
-
-            # Calculate Adaptation Appraisal
-            w_age = 1.0 - (0.12 / (0.12 + (min(50.0, res_comp.average_age()) / 50.0) ** 3))
-            # Here we use household capacity
-            w_hh_size = 1.0 - (0.12 / (0.12 + (
-                    min(ResourceComponent.carrying_capacity, res_comp.able_workers()
-                        ) / ResourceComponent.carrying_capacity) ** 3))
-
-            adaptation_efficancy = 0.55 * w_age + 0.45 * w_hh_size + (0.2 - 0.3 * self.model.random.random())
-
-            w_wealth = 1.0 / (1.0 + math.exp(-3.0 * ((res_comp.resources / res_comp.required_resources()) - 0.5)))
-
-            self_efficancy = 0.3 * w_wealth + 0.6 * adapt_comp.percentage_to_farm + (0.1 - 0.2 * self.model.random.random())
-
-            adaptation_appraisal = 0.5 * (adaptation_efficancy + self_efficancy)
-
-            if adaptation_appraisal < 0.0:
-                adaptation_appraisal = 0.0
-            elif adaptation_appraisal > 1.0:
-                adaptation_appraisal = 1.0
-
-            # Calculate Adaptation Intention
-            # Note: There is no adaptation cost in this model
-            r = HouseholdRBAdaptiveComponent.risk_elasticity * risk_appraisal
-            p = adaptation_appraisal * (1 - HouseholdRBAdaptiveComponent.cognitive_bias)
-
-            adaptation_intention = p - r
-
-            adaptation_modifier = 0.0  # Assume Maladaptation
-            # Now determine if successful adaptation vs. maladaptation occurs
-            if adaptation_intention > HouseholdRBAdaptiveComponent.adaptation_intention_threshold:
-                # Adaptation Occurs
-                adaptation_modifier = HouseholdRBAdaptiveComponent.learning_rate
-                self.logger.info('HOUSEHOLD.ADAPTATION.INTENDED: {}'.format(agent.id))
-            elif self.model.random.random() < 0.01:  # Described as Ingenuity Change
-                adaptation_modifier = HouseholdRBAdaptiveComponent.learning_rate * self.model.random.random()
-                self.logger.info('HOUSEHOLD.ADAPTATION.INGENUITY: {}'.format(agent.id))
-
-            # Get Experience
-            h_ids = self.model.environment[SettlementRelationshipComponent].settlements[agent[HouseholdRelationshipComponent].settlementID].occupants
-            hs = [self.model.environment.getAgent(h) for h in h_ids]
+            # Calculate Learning modifiers per settlement
+            hs = [self.model.environment.getAgent(h) for h in settlement.occupants]
             h_social_status = [h.social_status() for h in hs]
-
-            adaptation_experience_modifier = statistics.mean([
-                h[HouseholdRBAdaptiveComponent].percentage_to_farm for h in hs
-            ]) * HouseholdRBAdaptiveComponent.learning_rate
-
             total_wealth = sum(h_social_status)
+
             ws = [h / total_wealth if total_wealth != 0 else 0.0 for h in h_social_status]
             ws_sum = sum(ws)
 
-            if ws_sum != 0:  # Do not update anything if the entire settlement has no value
-                peer_trade_modifier = (sum(
+            if ws_sum != 0:
+                peer_resource_chances_mean = sum(
                     [hs[i][HouseholdRelationshipComponent].peer_resource_transfer_chance * ws[i]
-                        for i in range(len(hs))
-                    ]
-                )
-                / ws_sum - agent[HouseholdRelationshipComponent].peer_resource_transfer_chance) * HouseholdRBAdaptiveComponent.learning_rate
+                     for i in range(len(hs))
+                     ]
+                ) / ws_sum
 
-                sub_trade_modifier = (sum(
+                sub_resource_chances_mean = sum(
                     [hs[i][HouseholdRelationshipComponent].sub_resource_transfer_chance * ws[i]
-                        for i in range(len(hs))
-                    ]
-                )
-                / ws_sum - agent[HouseholdRelationshipComponent].sub_resource_transfer_chance) * HouseholdRBAdaptiveComponent.learning_rate
+                     for i in range(len(hs))
+                     ]
+                ) / ws_sum
 
-                agent[HouseholdRelationshipComponent].peer_resource_transfer_chance += peer_trade_modifier
-                agent[HouseholdRelationshipComponent].sub_resource_transfer_chance += sub_trade_modifier
+            for agent in [self.model.environment.getAgent(h) for h in settlement.occupants]:
 
-            # Update adaptation value
-            adapt_comp.percentage_to_farm += adaptation_modifier * adaptation_experience_modifier + 0.001 * self.model.random.random()
+                adapt_comp = agent[HouseholdRBAdaptiveComponent]
 
-            if adapt_comp.percentage_to_farm < 0.0:
-                adapt_comp.percentage_to_farm = 0.0
-            elif adapt_comp.percentage_to_farm > 1.0:
-                adapt_comp.percentage_to_farm = 1.0
+                # Update memories with some error margin
+                adapt_comp.update_rainfall_memory(rf_mean + 0.05 * self.model.random.randrange(-1.0, 1.0) * rf_mean)
+                adapt_comp.update_flood_memory(ge_comp.flood + 0.05 * self.model.random.randrange(-1.0, 1.0) * ge_comp.flood)
+
+                # Need to build memory before making decisions.
+                if self.model.systemManager.timestep < HouseholdRBAdaptiveComponent.yrs_to_look_back:
+                    return
+
+                res_comp = agent[ResourceComponent]
+                # Calculate Risk Appraisal
+
+                deltas = [
+                    abs(sum([adapt_comp.rainfall_memory[x] * HouseholdRBAdaptiveComponent.yr_look_back_weights[x]
+                        for x in range(HouseholdRBAdaptiveComponent.yrs_to_look_back)]) + (0.01 * self.model.random.random()
+                                           ) - AgentRBAdaptationSystem.rainfall_CMA) / AgentRBAdaptationSystem.rainfall_CMA,
+                    abs(sum([adapt_comp.flood_memory[x] * HouseholdRBAdaptiveComponent.yr_look_back_weights[x]
+                        for x in range(HouseholdRBAdaptiveComponent.yrs_to_look_back)]) + (0.01 * self.model.random.random()
+                                               ) - AgentRBAdaptationSystem.flood_CMA) / AgentRBAdaptationSystem.flood_CMA
+                ]
+
+                # If Rainfall delta is less than the flood delta, use the flood delta
+                sev_index = deltas[0] if deltas[0] > deltas[1] else deltas[1]
+                index = 0 if deltas[0] > deltas[1] else 1
+                # Set severity index
+                if sev_index < 0:
+                    sev_index = 0
+                elif sev_index > 0:
+                    sev_index = 2
+                else:
+                    sev_index = 1
+
+                # Now we can calculate the severity value
+                severity = deltas[index] * AgentRBAdaptationSystem.per_severity_index[index][sev_index]
+
+                if severity > 1.0:
+                    severity = 1.0
+                elif severity < 0.0:
+                    severity = 0.0
+
+                # Calculate risk appraisal
+                risk_appraisal = 0.6 * severity + 0.4 * self.model.random.random()
+
+                # Calculate Adaptation Appraisal
+                w_age = 1.0 - (0.12 / (0.12 + (min(50.0, res_comp.average_age()) / 50.0) ** 3))
+                # Here we use household capacity
+                w_hh_size = 1.0 - (0.12 / (0.12 + (
+                        min(ResourceComponent.carrying_capacity, res_comp.able_workers()
+                            ) / ResourceComponent.carrying_capacity) ** 3))
+
+                adaptation_efficancy = 0.55 * w_age + 0.45 * w_hh_size + (0.2 - 0.3 * self.model.random.random())
+
+                w_wealth = 1.0 / (1.0 + math.exp(-3.0 * ((res_comp.resources / res_comp.required_resources()) - 0.5)))
+
+                self_efficancy = 0.3 * w_wealth + 0.6 * adapt_comp.percentage_to_farm + (0.1 - 0.2 * self.model.random.random())
+
+                adaptation_appraisal = 0.5 * (adaptation_efficancy + self_efficancy)
+
+                if adaptation_appraisal < 0.0:
+                    adaptation_appraisal = 0.0
+                elif adaptation_appraisal > 1.0:
+                    adaptation_appraisal = 1.0
+
+                # Calculate Adaptation Intention
+                # Note: There is no adaptation cost in this model
+                r = HouseholdRBAdaptiveComponent.risk_elasticity * risk_appraisal
+                p = adaptation_appraisal * (1 - HouseholdRBAdaptiveComponent.cognitive_bias)
+
+                adaptation_intention = p - r
+
+                adaptation_modifier = 0.0  # Assume Maladaptation
+                # Now determine if successful adaptation vs. maladaptation occurs
+                if adaptation_intention > HouseholdRBAdaptiveComponent.adaptation_intention_threshold:
+                    # Adaptation Occurs
+                    adaptation_modifier = HouseholdRBAdaptiveComponent.learning_rate
+                    self.logger.info('HOUSEHOLD.ADAPTATION.INTENDED: {}'.format(agent.id))
+                elif self.model.random.random() < 0.01:  # Described as Ingenuity Change
+                    adaptation_modifier = HouseholdRBAdaptiveComponent.learning_rate * self.model.random.random()
+                    self.logger.info('HOUSEHOLD.ADAPTATION.INGENUITY: {}'.format(agent.id))
+
+                # Get Experience
+                adaptation_experience_modifier = statistics.mean([
+                    h[HouseholdRBAdaptiveComponent].percentage_to_farm for h in hs
+                ]) * HouseholdRBAdaptiveComponent.learning_rate
+
+                # Update adaptation value
+                adapt_comp.percentage_to_farm += adaptation_modifier * adaptation_experience_modifier + 0.001 * self.model.random.random()
+
+                if adapt_comp.percentage_to_farm < 0.0:
+                    adapt_comp.percentage_to_farm = 0.0
+                elif adapt_comp.percentage_to_farm > 1.0:
+                    adapt_comp.percentage_to_farm = 1.0
+
+                # Update Sharing Preferences
+                if ws_sum != 0:  # Do not update anything if the entire settlement has no value
+                    peer_trade_modifier = (peer_resource_chances_mean - agent[
+                        HouseholdRelationshipComponent].peer_resource_transfer_chance
+                                           ) * HouseholdRBAdaptiveComponent.learning_rate
+
+                    sub_trade_modifier = (sub_resource_chances_mean - agent[
+                        HouseholdRelationshipComponent].sub_resource_transfer_chance
+                                          ) * HouseholdRBAdaptiveComponent.learning_rate
+
+                    agent[HouseholdRelationshipComponent].peer_resource_transfer_chance += peer_trade_modifier
+                    agent[HouseholdRelationshipComponent].sub_resource_transfer_chance += sub_trade_modifier
 
 
 
