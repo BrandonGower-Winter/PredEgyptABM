@@ -350,6 +350,7 @@ class IEHousehold(PreferenceHousehold):
         IEComponent.conformity_range = params['conformity_range']
         IEComponent.b = params['b']
         IEComponent.m = params['m']
+        IEComponent.mutation_rate = params['mutation_rate']
 
         agent = IEHousehold(params['agent_index'], params['model'], -1, params['init_preference'])
         for i in range(params['init_occupants']):
@@ -512,6 +513,30 @@ class SettlementRelationshipComponent(Component):
         return [self.model.environment.getAgent(x) for x in
                 self.settlements[h[HouseholdRelationshipComponent].settlementID].occupants
                 if self.model.environment.getAgent(x)[HouseholdRelationshipComponent].is_peer(h)]
+
+    def create_belief_space(self, sID):
+
+        # Get Weights
+        households = [self.model.environment.getAgent(h) for h in self.settlements[sID].occupants
+                      if self.model.environment.getAgent(h).hasComponent(HouseholdPreferenceComponent)]
+        ws = np.array([h.social_status() for h in households])
+        if ws.sum() == 0.0:
+            ws = np.ones((len(households)))  # If the village has no one with any social status, they are all equal
+            ws = ws / len(households)
+        else:
+            ws = ws / ws.sum()
+
+        forage, farm, learning_rate, conformity, peer, sub = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+
+        for i in range(len(households)):
+            forage += households[i][HouseholdPreferenceComponent].forage_utility * ws[i]
+            farm += households[i][HouseholdPreferenceComponent].farm_utility * ws[i]
+            learning_rate += households[i][HouseholdPreferenceComponent].learning_rate * ws[i]
+            conformity += households[i][IEComponent].conformity * ws[i]
+            peer += households[i][HouseholdRelationshipComponent].peer_resource_transfer_chance * ws[i]
+            sub += households[i][HouseholdRelationshipComponent].sub_resource_transfer_chance * ws[i]
+
+        return BeliefSpace(forage, farm, learning_rate, conformity, peer, sub)
 
     def get_learning_rate_std(self, sID):
         """Returns the Standard Deviation of the House Learning Rate for all Households that are in settlement sID """
@@ -1543,15 +1568,136 @@ class AgentRBAdaptationSystem(System, IDecodable, ILoggable):
                     agent[HouseholdRelationshipComponent].peer_resource_transfer_chance += peer_trade_modifier
                     agent[HouseholdRelationshipComponent].sub_resource_transfer_chance += sub_trade_modifier
 
-
-
     @staticmethod
     def decode(params: dict):
         return AgentRBAdaptationSystem(params['id'], params['model'], params['priority'])
 
 
-# Collectors
+class BeliefSpace:
 
+    def __init__(self, forage_utility, farm_utility, learning_rate, conformity, peer_transfer, sub_transfer):
+        self.forage_utility = forage_utility
+        self.farm_utility = farm_utility
+        self.learning_rate = learning_rate
+        self.conformity = conformity
+        self.peer_transfer = peer_transfer
+        self.sub_transfer = sub_transfer
+
+    def influence(self, bs, dst_penalty: float):
+        self.forage_utility += (bs.forage_utility - self.forage_utility) * self.conformity * dst_penalty
+        self.farm_utility += (bs.farm_utility - self.farm_utility) * self.conformity * dst_penalty
+        self.learning_rate += (bs.learning_rate - self.learning_rate) * self.conformity * dst_penalty
+        self.peer_transfer += (bs.peer_transfer - self.peer_transfer) * self.conformity * dst_penalty
+        self.sub_transfer += (bs.sub_transfer - self.sub_transfer) * self.conformity * dst_penalty
+
+        # Do Conformity Last so it doesn't affect the other results.
+        self.conformity += (bs.conformity - self.conformity) * self.conformity * dst_penalty
+
+    def jsonify(self):
+        return {
+            'forage_utility': self.forage_utility,
+            'farm_utility': self.farm_utility,
+            'learning_rate': self.learning_rate,
+            'conformity': self.conformity,
+            'peer_transfer': self.peer_transfer,
+            'sub_transfer': self.sub_transfer
+        }
+
+    def duplicate(self):
+        return BeliefSpace(self.forage_utility, self.farm_utility, self.learning_rate, self.conformity,
+                           self.peer_transfer, self.sub_transfer)
+
+
+class AgentIEAdaptationSystem(System, IDecodable, ILoggable):
+
+    influence_rate = 0.05
+
+    def __init__(self,id: str, model: Model, priority: int):
+        System.__init__(self, id, model, priority=priority)
+        IDecodable.__init__(self)
+        ILoggable.__init__(self, 'model.IEAS')
+        self.belief_spaces = {}
+
+    def execute(self):
+
+        belief_spaces = {}
+
+        sr_comp = self.model.environment[SettlementRelationshipComponent]
+        # Calculate Belief Space for each settlement
+        settlements = [sr_comp.settlements[s] for s in sr_comp.settlements]
+        wealth_dict = {}
+        pos_dict = {}
+        for settlement in settlements:
+            belief_spaces[settlement.id] = sr_comp.create_belief_space(settlement.id)
+            wealth_dict[settlement.id] = sr_comp.getSettlementSocialStatus(settlement.id)
+            pos_dict[settlement.id] = sr_comp.settlements[settlement.id].pos[0]
+
+        # Influence Each Settlement's belief space using XTENT
+        pos_series = self.model.environment.cells['pos']
+
+        influenced_belief_spaces = {}  # Influence Happens Simultaneously so we have to duplicate the belief spaces
+        for key in belief_spaces:
+            influenced_belief_spaces[key] = belief_spaces[key].duplicate()
+
+        for settlement in settlements:
+
+            ss = [s for s in sr_comp.settlements if s != settlement.id]
+            ws = np.array([wealth_dict[s] for s in ss])
+
+            self_pos = pos_series[sr_comp.settlements[settlement.id].pos[0]]
+            pos_ids = [pos_dict[s] for s in ss]
+            # Calculate the distances
+            ds = np.sqrt(np.array([((pos_series[pos][0] - self_pos[0]) ** 2 + (pos_series[pos][1] - self_pos[1]) ** 2)
+                                   for pos in pos_ids])) * self.model.cellSize
+
+            xtent_dst = CAgentUtilityFunctions.xtent_distribution(ws, ds, IEComponent.b, IEComponent.m)
+
+            for index in range(len(xtent_dst)):
+                if xtent_dst[index] > 0.0:
+                    influenced_belief_spaces[settlement.id].influence(belief_spaces[ss[index]],
+                                          xtent_dst[index] if xtent_dst[index] < 1.0 else 1.0)  # Have to clamp it at 1
+
+        belief_spaces = influenced_belief_spaces
+
+        # Influence Each Household using Updated Settlement belief spaces
+        for agent in self.model.environment.getAgents():
+            if self.model.random.random() < AgentIEAdaptationSystem.influence_rate:
+                AgentIEAdaptationSystem.influence_agent(agent, belief_spaces[agent[HouseholdRelationshipComponent
+                ].settlementID])
+
+                self.logger.info('HOUSEHOLD.INFLUENCE: {}'.format(agent.id))
+
+        self.belief_spaces = belief_spaces
+
+    @staticmethod
+    def influence_agent(agent: IEHousehold, bs: BeliefSpace):
+
+        conformity = agent[IEComponent].conformity
+
+        agent[HouseholdPreferenceComponent].forage_utility += ( bs.forage_utility - agent[HouseholdPreferenceComponent
+        ].forage_utility) * conformity
+
+        agent[HouseholdPreferenceComponent].farm_utility += (bs.farm_utility - agent[HouseholdPreferenceComponent
+        ].farm_utility) * conformity
+
+        agent[HouseholdPreferenceComponent].learning_rate += (bs.learning_rate - agent[HouseholdPreferenceComponent
+        ].learning_rate) * conformity
+
+        agent[IEComponent].conformity += (bs.conformity - agent[IEComponent].conformity) * conformity
+
+        agent[HouseholdRelationshipComponent].peer_resource_transfer_chance += (bs.peer_transfer - agent[
+            HouseholdRelationshipComponent].peer_resource_transfer_chance) * conformity
+        agent[HouseholdRelationshipComponent].sub_resource_transfer_chance += (bs.sub_transfer - agent[
+            HouseholdRelationshipComponent].sub_resource_transfer_chance) * conformity
+
+
+    @staticmethod
+    def decode(params: dict):
+        AgentIEAdaptationSystem.influence_rate = params['influence_rate']
+        return AgentIEAdaptationSystem(params['id'], params['model'], params['priority'])
+
+
+# Collectors
 class AgentCollector(Collector, IDecodable):
 
     def __init__(self, id: str, model: Model):
@@ -1684,6 +1830,7 @@ class SettlementSnapshotCollector(Collector):
         super().__init__(id, model, frequency=frequency)
 
         self.file_name = file_name
+        self.IEAS = 'IEAS' in self.model.systemManager.systems
 
     def collect(self):
 
@@ -1698,6 +1845,10 @@ class SettlementSnapshotCollector(Collector):
             generated_dict['farm_utility'] = srComp.getSettlementFarmUtility(sid)
             generated_dict['forage_utility'] = srComp.getSettlementForageUtility(sid)
             generated_dict['percentage_to_farm'] = srComp.getSettlementPercentageToFarm(sid)
+
+            if self.IEAS and sid in self.model.systemManager.systems['IEAS'].belief_spaces:
+                generated_dict['belief_space'] = self.model.systemManager.systems['IEAS'].belief_spaces[sid].jsonify()
+
             toWrite.append(generated_dict)
 
         with open(self.file_name + '/iteration_{}.json'.format(self.model.systemManager.timestep), 'w') as outfile:

@@ -335,11 +335,39 @@ def xtent_map(settlement_data : [], pixels):
     return ret_data
 
 
+def get_dict_by_id(l : [], id: int):
+    for item in l:
+        if item['id'] == id:
+            return item
+    return None
+
+
+def xtent_to_property(xtent_arr: [], settlement_data: [], property: str, modifier = 0.0):
+    to_ret = []
+
+    for z in range(len(xtent_arr)):
+        map = []
+        for y in range(len(xtent_arr[z])):
+            row = []
+            for x in range(len(xtent_arr[z][y])):
+                if xtent_arr[z][y][x] != 0:
+                    settlement = get_dict_by_id(settlement_data[z], int(xtent_arr[z][y][x] - 1))
+                    if settlement is not None and 'belief_space' in settlement:
+                        row.append(settlement['belief_space'][property] + modifier)
+                    else:
+                        row.append(0.0)
+                else:
+                    row.append(0.0)
+            map.append(row)
+        to_ret.append(map)
+
+    return to_ret
+
+
 def household_social_status_weighted_mean(data: []):
 
     total_social_status = sum([point[1] + point[2] for point in data])
-    w_sum = sum([(point[1] + point[2]) / total_social_status for point in data])
-    return sum([point[0] * (point[1] + point[2]) / total_social_status for point in data]) / w_sum
+    return sum([point[0] * (point[1] + point[2]) / total_social_status for point in data])
 
 
 def generate_household_plots(parser):
@@ -437,8 +465,40 @@ def generate_settlement_plots(parser, pixels):
                             filter=['gini'], legend='center right')
 
     xtent_arr = xtent_map(settlement_snapshots, pixels)
+
+    farm_utility_arr = xtent_to_property(xtent_arr, settlement_snapshots, 'farm_utility')
+    forage_utility_arr = xtent_to_property(xtent_arr, settlement_snapshots, 'forage_utility')
+
+    for z in range(len(farm_utility_arr)):
+        for y in range(len(farm_utility_arr[z])):
+            for x in range(len(farm_utility_arr[z][y])):
+                if farm_utility_arr[z][y][x] == 0.0 and forage_utility_arr[z][y][x] == 0.0:
+                    farm_utility_arr[z][y][x] = 0.0
+                else:
+                    farm_utility_arr[z][y][x] = 2.0 if farm_utility_arr[z][y][x] > forage_utility_arr[z][y][x] else 1.0
+
+    learning_rate_arr = xtent_to_property(xtent_arr, settlement_snapshots, 'learning_rate', 1)
+    conformity_arr = xtent_to_property(xtent_arr, settlement_snapshots, 'conformity', 1)
+    peer_arr = xtent_to_property(xtent_arr, settlement_snapshots, 'peer_transfer', 1)
+    sub_arr = xtent_to_property(xtent_arr, settlement_snapshots, 'sub_transfer', 1)
+
     Animate.generateAnimat('Xtent model showing Settlement Territory', xtent_arr, fps=100, vmin=0, vmax=300,
                            filename=parser.path + '/settlement_plots/xtent_animat')
+
+    Animate.generateAnimat('Influence of Settlement Farm/Forage Preference', farm_utility_arr, fps=100, vmin=0, vmax=2,
+                           filename=parser.path + '/settlement_plots/farm_utility_influence_animat')
+
+    Animate.generateAnimat('Influence of Settlement Learning Rate', learning_rate_arr, fps=100, vmin=0, vmax=1.2,
+                           filename=parser.path + '/settlement_plots/learning_rate_influence_animat')
+
+    Animate.generateAnimat('Influence of Settlement Conformity', conformity_arr, fps=100, vmin=0, vmax=1.2,
+                           filename=parser.path + '/settlement_plots/conformity_influence_animat')
+
+    Animate.generateAnimat('Influence of Settlement Peer Exchange', peer_arr, fps=100, vmin=0, vmax=2,
+                           filename=parser.path + '/settlement_plots/peer_influence_animat')
+
+    Animate.generateAnimat('Influence of Settlement Sub Exchange', sub_arr, fps=100, vmin=0, vmax=2,
+                           filename=parser.path + '/settlement_plots/sub_influence_animat')
 
 
 def generate_environment_plots(parser, pixels):
