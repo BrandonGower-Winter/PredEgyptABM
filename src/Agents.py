@@ -9,12 +9,12 @@ from ECAgent.Core import *
 from ECAgent.Decode import IDecodable
 from ECAgent.Environments import PositionComponent, discreteGridPosToID
 from ECAgent.Collectors import Collector, FileCollector
-from VegetationModel import VegetationGrowthSystem, SoilMoistureSystem, SoilMoistureComponent, GlobalEnvironmentComponent
+from VegetationModel import SoilMoistureComponent, GlobalEnvironmentComponent
 
 from Logging import ILoggable
 
 # Cython Functions
-from CythonFunctions import CAgentResourceConsumptionSystemFunctions, CAgentResourceAcquisitionFunctions, CVegetationGrowthSystemFunctions
+from CythonFunctions import CAgentResourceConsumptionSystemFunctions, CAgentResourceAcquisitionFunctions, CAgentUtilityFunctions
 
 
 class Individual:
@@ -176,6 +176,20 @@ class HouseholdRBAdaptiveComponent(Component):
             self.rainfall_memory.pop(0)
 
 
+class IEComponent(Component):
+
+    mutation_rate = 0.05
+    conformity_range = [0.0, 1.0]
+
+    b = 1.5
+    m = 0.5
+
+    def __init__(self, agent: Agent, model: Model):
+        super().__init__(agent, model)
+
+        self.conformity = self.model.random.uniform(IEComponent.conformity_range[0], IEComponent.conformity_range[1])
+
+
 class Household(Agent, IDecodable):
 
     def __init__(self, id: str, model: Model, settlementID: int):
@@ -315,6 +329,42 @@ class PreferenceHousehold(Household):
         return created_dict
 
 
+class IEHousehold(PreferenceHousehold):
+
+    def __init__(self, id: str, model: Model, settlementID: int, init_preference):
+        super().__init__(id, model, settlementID, init_preference)
+
+        self.addComponent(IEComponent(self, self.model))
+
+    @staticmethod
+    def decode(params: dict):
+        ResourceComponent.age_of_maturity = params['age_of_maturity']
+        ResourceComponent.consumption_rate = params['consumption_rate']
+        ResourceComponent.carrying_capacity = params['carrying_capacity']
+        ResourceComponent.vision_square = params['vision_square']
+        ResourceComponent.child_factor = params['child_factor']
+
+        HouseholdRelationshipComponent.load_difference = params['load_difference']
+
+        HouseholdPreferenceComponent.learning_rate_range = params['learning_rate_range']
+        IEComponent.conformity_range = params['conformity_range']
+        IEComponent.b = params['b']
+        IEComponent.m = params['m']
+
+        agent = IEHousehold(params['agent_index'], params['model'], -1, params['init_preference'])
+        for i in range(params['init_occupants']):
+            age = agent.model.random.randrange(params['init_age_range'][0], params['init_age_range'][1])
+            agent[ResourceComponent].add_occupant(agent[ResourceComponent].get_next_id(), age)
+        return agent
+
+    def jsonify(self) -> dict:
+        created_dict = super().jsonify()
+
+        created_dict['conformity'] = self[IEComponent].conformity
+
+        return created_dict
+
+
 class Settlement:
     def __init__(self, id):
         self.id = id
@@ -405,6 +455,10 @@ class SettlementRelationshipComponent(Component):
         return sum([self.model.environment.getAgent(h)[HouseholdRelationshipComponent].load for h in
                     self.settlements[settlementID].occupants])
 
+    def getSettlementSocialStatus(self, settlementID):
+        return sum([self.model.environment.getAgent(h).social_status() for h in
+                    self.settlements[settlementID].occupants])
+
     def getSettlementPopulation(self, settlementID):
         return sum([len(self.model.environment.getAgent(h)[ResourceComponent].occupants) for h in
                     self.settlements[settlementID].occupants])
@@ -458,6 +512,56 @@ class SettlementRelationshipComponent(Component):
         return [self.model.environment.getAgent(x) for x in
                 self.settlements[h[HouseholdRelationshipComponent].settlementID].occupants
                 if self.model.environment.getAgent(x)[HouseholdRelationshipComponent].is_peer(h)]
+
+    def get_learning_rate_std(self, sID):
+        """Returns the Standard Deviation of the House Learning Rate for all Households that are in settlement sID """
+        return statistics.stdev(
+            [self.model.environment.getAgent(h)[HouseholdPreferenceComponent].learning_rate
+             for h in self.settlements[sID].occupants
+             if self.model.environment.getAgent(h).hasComponent(HouseholdPreferenceComponent)]
+        )
+
+    def get_forage_utility_std(self, sID):
+        """Returns the Standard Deviation of the House Forage Utility for all Households that are in settlement sID """
+        return statistics.stdev(
+            [self.model.environment.getAgent(h)[HouseholdPreferenceComponent].forage_utility
+             for h in self.settlements[sID].occupants
+             if self.model.environment.getAgent(h).hasComponent(HouseholdPreferenceComponent)]
+        )
+
+    def get_farm_utility_std(self, sID):
+        """Returns the Standard Deviation of the House Farm Utility for all Households that are in settlement sID """
+        return statistics.stdev(
+            [self.model.environment.getAgent(h)[HouseholdPreferenceComponent].farm_utility
+             for h in self.settlements[sID].occupants
+             if self.model.environment.getAgent(h).hasComponent(HouseholdPreferenceComponent)]
+        )
+
+    def get_peer_transfer_std(self, sID):
+        """Returns the Standard Deviation of the House Peer Resource Transfer Chance for all Households
+        that are in settlement sID """
+        return statistics.stdev(
+            [self.model.environment.getAgent(h)[HouseholdRelationshipComponent].peer_resource_transfer_chance
+             for h in self.settlements[sID].occupants
+             if self.model.environment.getAgent(h).hasComponent(HouseholdRelationshipComponent)]
+        )
+
+    def get_sub_transfer_std(self, sID):
+        """Returns the Standard Deviation of the House Sub Resource Transfer Chance for all Households
+        that are in settlement sID """
+        return statistics.stdev(
+            [self.model.environment.getAgent(h)[HouseholdRelationshipComponent].sub_resource_transfer_chance
+             for h in self.settlements[sID].occupants
+             if self.model.environment.getAgent(h).hasComponent(HouseholdRelationshipComponent)]
+        )
+
+    def get_conformity_std(self, sID):
+        """Returns the Standard Deviation of the House Conformity for all Households that are in settlement sID """
+        return statistics.stdev(
+            [self.model.environment.getAgent(h)[IEComponent].conformity
+             for h in self.settlements[sID].occupants
+             if self.model.environment.getAgent(h).hasComponent(IEComponent)]
+        )
 
 
 class AgentResourceAcquisitionSystem(System, IDecodable, ILoggable):
@@ -899,7 +1003,9 @@ class AgentPopulationSystem(System, IDecodable, ILoggable):
 
         self.logger.info('HOUSEHOLD.SPLIT: {}'.format(household.id))
 
-        if household.hasComponent(HouseholdPreferenceComponent):
+        if household.hasComponent(IEComponent):
+            new_household = IEHousehold(self.num_households, self.model, -1, 0.0)
+        elif household.hasComponent(HouseholdPreferenceComponent):
             new_household = PreferenceHousehold(self.num_households, self.model, -1, 0.0)
         elif household.hasComponent(HouseholdRBAdaptiveComponent):
             new_household = RBAdaptiveHousehold(self.num_households, self.model, -1)
@@ -974,29 +1080,112 @@ class AgentPopulationSystem(System, IDecodable, ILoggable):
             children.remove(id)
             child_count -= 1
 
-        # Set Household Resource Trading Personality Types
-        new_household[HouseholdRelationshipComponent].peer_resource_transfer_chance = household[
-            HouseholdRelationshipComponent].peer_resource_transfer_chance
-        new_household[HouseholdRelationshipComponent].sub_resource_transfer_chance = household[
-            HouseholdRelationshipComponent].sub_resource_transfer_chance
+        if not new_household.hasComponent(IEComponent):
 
-        # Set Preference
-        if new_household.hasComponent(HouseholdPreferenceComponent):
-            new_household[HouseholdPreferenceComponent].prev_hunger = household[HouseholdPreferenceComponent].prev_hunger
-            new_household[HouseholdPreferenceComponent].forage_utility = household[HouseholdPreferenceComponent].forage_utility
-            new_household[HouseholdPreferenceComponent].farm_utility = household[HouseholdPreferenceComponent].farm_utility
-            new_household[HouseholdPreferenceComponent].learning_rate = household[HouseholdPreferenceComponent].learning_rate
+            # Set Household Resource Trading Personality Types
+            new_household[HouseholdRelationshipComponent].peer_resource_transfer_chance = household[
+                HouseholdRelationshipComponent].peer_resource_transfer_chance
+            new_household[HouseholdRelationshipComponent].sub_resource_transfer_chance = household[
+                HouseholdRelationshipComponent].sub_resource_transfer_chance
 
-        if new_household.hasComponent(HouseholdRBAdaptiveComponent):
-            new_household[HouseholdRBAdaptiveComponent].rainfall_memory = [
-                x for x in household[HouseholdRBAdaptiveComponent].rainfall_memory
-            ]
+            # Set Preference
+            if new_household.hasComponent(HouseholdPreferenceComponent):
+                new_household[HouseholdPreferenceComponent].prev_hunger = household[HouseholdPreferenceComponent].prev_hunger
+                new_household[HouseholdPreferenceComponent].forage_utility = household[HouseholdPreferenceComponent].forage_utility
+                new_household[HouseholdPreferenceComponent].farm_utility = household[HouseholdPreferenceComponent].farm_utility
+                new_household[HouseholdPreferenceComponent].learning_rate = household[HouseholdPreferenceComponent].learning_rate
 
-            new_household[HouseholdRBAdaptiveComponent].flood_memory = [
-                x for x in household[HouseholdRBAdaptiveComponent].flood_memory
-            ]
+            if new_household.hasComponent(HouseholdRBAdaptiveComponent):
+                new_household[HouseholdRBAdaptiveComponent].rainfall_memory = [
+                    x for x in household[HouseholdRBAdaptiveComponent].rainfall_memory
+                ]
 
-            new_household[HouseholdRBAdaptiveComponent].percentage_to_farm = household[HouseholdRBAdaptiveComponent].percentage_to_farm
+                new_household[HouseholdRBAdaptiveComponent].flood_memory = [
+                    x for x in household[HouseholdRBAdaptiveComponent].flood_memory
+                ]
+
+                new_household[HouseholdRBAdaptiveComponent].percentage_to_farm = household[HouseholdRBAdaptiveComponent].percentage_to_farm
+        else:
+
+            sr_comp = self.model.environment[SettlementRelationshipComponent]
+            # Determine Parents using neighbouring settlements and households
+            # Settlements get a penalty associated with the xtent formula to promote within settlement gene crossover
+            parents = [household, self.determine_parent(sID, new_household)]
+
+            # Determine Gene Array
+            parent_indices = [self.model.random.randint(0, 1) for _ in range(6)]
+            # And if mutation should occur
+            mutate_arr = [self.model.random.random() for _ in range(6)]
+
+            # Set Household Resource Trading Personality Types with mutation
+            # Peer Resource Transfer
+            if mutate_arr[0] > IEComponent.mutation_rate:
+                new_household[HouseholdRelationshipComponent].peer_resource_transfer_chance = parents[
+                    parent_indices[0]][HouseholdRelationshipComponent].peer_resource_transfer_chance
+            else:
+                new_household[HouseholdRelationshipComponent].peer_resource_transfer_chance = self.model.random.gauss(
+                    parents[parent_indices[0]][HouseholdRelationshipComponent].peer_resource_transfer_chance,
+                    sr_comp.get_peer_transfer_std(sID))
+
+                self.logger.info('MUTATE.HOUSEHOLD.PEER_TRANSFER: {}'.format(new_household.id))
+
+            # Sub Resource Transfer
+            if mutate_arr[1] > IEComponent.mutation_rate:
+                new_household[HouseholdRelationshipComponent].sub_resource_transfer_chance = parents[
+                    parent_indices[1]][HouseholdRelationshipComponent].sub_resource_transfer_chance
+            else:
+                new_household[HouseholdRelationshipComponent].sub_resource_transfer_chance = self.model.random.gauss(
+                    parents[parent_indices[1]][HouseholdRelationshipComponent].sub_resource_transfer_chance,
+                    sr_comp.get_sub_transfer_std(sID))
+
+                self.logger.info('MUTATE.HOUSEHOLD.SUB_TRANSFER: {}'.format(new_household.id))
+
+            # Set Preference
+            new_household[HouseholdPreferenceComponent].prev_hunger = household[
+                HouseholdPreferenceComponent].prev_hunger
+
+            # Forage Utility
+            if mutate_arr[2] > IEComponent.mutation_rate:
+                new_household[HouseholdPreferenceComponent].forage_utility = parents[parent_indices[2]][
+                    HouseholdPreferenceComponent].forage_utility
+            else:
+                new_household[HouseholdPreferenceComponent].forage_utility = self.model.random.gauss(
+                    parents[parent_indices[2]][HouseholdPreferenceComponent].forage_utility,
+                    sr_comp.get_forage_utility_std(sID))
+
+                self.logger.info('MUTATE.HOUSEHOLD.FORAGE_UTILITY: {}'.format(new_household.id))
+
+            # Farm Utility
+            if mutate_arr[3] > IEComponent.mutation_rate:
+                new_household[HouseholdPreferenceComponent].farm_utility = parents[parent_indices[3]][
+                    HouseholdPreferenceComponent].farm_utility
+            else:
+                new_household[HouseholdPreferenceComponent].farm_utility = self.model.random.gauss(
+                    parents[parent_indices[3]][HouseholdPreferenceComponent].farm_utility,
+                    sr_comp.get_farm_utility_std(sID))
+
+                self.logger.info('MUTATE.HOUSEHOLD.FARM_UTILITY: {}'.format(new_household.id))
+
+            # Learning Rate
+            if mutate_arr[4] > IEComponent.mutation_rate:
+                new_household[HouseholdPreferenceComponent].learning_rate = parents[parent_indices[4]][
+                    HouseholdPreferenceComponent].learning_rate
+            else:
+                new_household[HouseholdPreferenceComponent].learning_rate = self.model.random.gauss(
+                    parents[parent_indices[4]][HouseholdPreferenceComponent].learning_rate,
+                    sr_comp.get_learning_rate_std(sID))
+
+                self.logger.info('MUTATE.HOUSEHOLD.STUBBORNESS: {}'.format(new_household.id))
+
+            # Conformity
+            if mutate_arr[5] > IEComponent.mutation_rate:
+                new_household[IEComponent].conformity = parents[parent_indices[5]][IEComponent].conformity
+            else:
+                new_household[IEComponent].conformity = self.model.random.gauss(
+                    parents[parent_indices[5]][IEComponent].conformity,
+                    sr_comp.get_conformity_std(sID))
+
+                self.logger.info('MUTATE.HOUSEHOLD.CONFORMITY: {}'.format(new_household.id))
 
         self.num_households += 1
 
@@ -1132,6 +1321,65 @@ class AgentPopulationSystem(System, IDecodable, ILoggable):
             self.model.environment.getComponent(SettlementRelationshipComponent).add_household_to_settlement(household, sttlID)
 
             self.logger.info('HOUSEHOLD.MOVE.RANDOM: {} {} {} {}'.format(household.id, old_sid, sttlID, new_unq_id))
+
+    def determine_parent(self, sID, new_household: IEHousehold):
+
+        # Get all households in settlement sID
+        households = [self.model.environment.getAgent(h) for h in self.model.environment[
+            SettlementRelationshipComponent].settlements[sID].occupants
+                      if self.model.environment.getAgent(h).social_status != 0.0
+                      and self.model.environment.getAgent(h) != new_household]
+
+
+        # Get all Settlements using Xtent
+        sr_comp = self.model.environment[SettlementRelationshipComponent]
+
+        pos_series = self.model.environment.cells['pos']
+
+        ss = [s for s in sr_comp.settlements if s != sID]
+        ws = np.array([sr_comp.getSettlementSocialStatus(s) for s in ss])
+
+        self_pos = pos_series[sr_comp.settlements[sID].pos[0]]
+        pos_ids = [sr_comp.settlements[s].pos[0] for s in ss]
+        # Calculate the distances
+        ds = np.sqrt(np.array([((pos_series[pos][0] - self_pos[0]) ** 2 + (pos_series[pos][1] - self_pos[1]) ** 2)
+                               for pos in pos_ids])) * self.model.cellSize
+
+        xtent_dst = CAgentUtilityFunctions.xtent_distribution(ws, ds, IEComponent.b, IEComponent.m)
+
+        # Add Other Set of Households to possible parent candidates probabilistically
+        for i in range(len(xtent_dst)):
+            if self.model.random.random() < xtent_dst[i]:
+                # Add all households
+                households.extend([self.model.environment.getAgent(h)
+                                   for h in sr_comp.settlements[ss[i]].occupants])
+
+        # Check to see if all households do not have any resource, if so, randomly choose
+        if len(households) == 0:
+            return self.model.random.choice([self.model.environment.getAgent(h) for h in self.model.environment[
+                SettlementRelationshipComponent].settlements[sID].occupants
+                if self.model.environment.getAgent(h) != new_household])
+
+        # Get status distribution
+        h_status = [h.social_status() for h in households if h.social_status]
+        h_status_total = sum(h_status)
+
+        h_weighted_distribution = []
+
+        for status in h_status:
+
+            if len(h_weighted_distribution) == 0:
+                h_weighted_distribution.append(status / h_status_total)
+            else:
+                h_weighted_distribution.append(h_weighted_distribution[-1] + status / h_status_total)
+
+        random_val = self.model.random.random()
+        for i in range(len(h_weighted_distribution)):
+
+            if h_weighted_distribution[i] < random_val:
+                return households[i]
+
+        return households[-1]  # Default to last agent if value is not lower than any of the agents in the distribution
 
     @staticmethod
     def decode(params: dict):
