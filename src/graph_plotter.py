@@ -3,6 +3,8 @@ import json
 import matplotlib.pyplot as pyplot
 import numpy as np
 
+import os
+
 from CythonFunctions import CGlobalEnvironmentCurves
 
 
@@ -21,18 +23,19 @@ def scenario_to_curve(scenario, i):
         return CGlobalEnvironmentCurves.linear_modified_dsinusoidal_lerp(0., 1., i, 16, 1, 1)
 
 
-def get_scenario_data(runs: {}, scenario):
+def get_scenario_data(runs: {}):
 
     placeholder = np.zeros((2000, len(runs)), dtype=float)
+    population_in_delta_placeholder = np.zeros((2000, len(runs)), dtype=float)
 
     index = 0
     for seed in runs:
         for i in range(len(runs[seed]['population']['total'])):
             placeholder[i][index] = runs[seed]['population']['total'][i]
-
+            population_in_delta_placeholder[i][index] = runs[seed]['pop_dist']['delta'][i]
         index += 1
 
-    data = np.zeros((6, 2000), dtype=float)
+    data = np.zeros((8, 2000), dtype=float)
 
     for i in range(2000):
         data[0][i] = np.mean(placeholder[i])
@@ -45,6 +48,9 @@ def get_scenario_data(runs: {}, scenario):
         # Resistance Metric
         if i != 0:
             data[5][i] = (data[0][i] - data[0][0]) / data[0][i] * 100.0
+
+        data[6][i] = np.mean(population_in_delta_placeholder[i])
+        data[7][i] = data[0][i] - data[6][i]
 
     return data
 
@@ -60,11 +66,7 @@ def write_plot(agent_types: [], scenario, filename, data, title: str, index: int
     iterations = np.arange(2000)
 
     for agent_type in agent_types:
-        ax.plot(iterations, data[agent_type][scenario][index], label=agent_type)
-        if index == 0:
-            color = [l for l in ax.lines if l._label == agent_type][0]._color
-            ax.fill_between(iterations, data[agent_type][scenario][0] - data[agent_type][scenario][1],
-                        data[agent_type][scenario][0] + data[agent_type][scenario][1], color=color, alpha=0.2)
+        ax.plot(iterations, data[agent_type][index], label=agent_type)
 
     ax.legend(loc=legend)
     ax.set_aspect('auto')
@@ -77,8 +79,12 @@ def main():
     # Process the params
     print("Parsing arguments...")
     parser = argparse.ArgumentParser()
-    parser.add_argument('file', help='The file containing the processed data', type=str)
-    parser.add_argument('store_loc', help='location to store images', type=str)
+    parser.add_argument('-p', '--path', help='The path to the folder containing all of the processed data',
+                        required=True)
+    parser.add_argument('-o', '--output', help='The path to write all of the processed data to.',
+                        required=True)
+    parser.add_argument('-s', '--scenario', help='The scenario name',
+                        required=True)
     parser.add_argument('-v', '--verbose', help='Will print out informative information to the terminal.',
                         action='store_true')
 
@@ -86,36 +92,36 @@ def main():
 
     data = {}
 
-    with open(parser.file) as json_file:
-        data = json.load(json_file)
+    for root, _, files in os.walk(parser.path):
+        for agent_type in files:
+            with open(os.path.join(root, agent_type)) as json_file:
+                data[agent_type[0:-5]] = get_scenario_data(json.load(json_file))
 
-    reordered_data = {}
+    write_plot([a for a in data], parser.scenario, '%s/population' % parser.output, data,
+               'Total Population of Agent Types for %s averaged over 50 simulation runs.' % parser.scenario,
+               0, 'iterations', 'Population')
+    write_plot([a for a in data], parser.scenario, '%s/SD' % parser.output, data,
+               'SD of Population of Agent Types for %s averaged over 50 simulation runs.' % parser.scenario,
+               1, 'iterations', 'SD')
+    write_plot([a for a in data], parser.scenario, '%s/RSD' % parser.output, data,
+               'RSD of Population of Agent Types for %s averaged over 50 simulation runs.' % parser.scenario,
+               2, 'iterations', 'RSD(%)')
+    write_plot([a for a in data], parser.scenario, '%s/onestd' % parser.output, data,
+               '%s of simulation runs within 1 STD of the mean\nfor %s averaged over 50 simulation runs.' % ('%', parser.scenario),
+               3, 'iterations', '%')
+    write_plot([a for a in data], parser.scenario, '%s/twostd' % parser.output, data,
+               '%s of simulation runs within 2 STD of the mean\nfor %s averaged over 50 simulation runs.' % ('%', parser.scenario),
+               4, 'iterations', '%')
+    write_plot([a for a in data], parser.scenario, '%s/resistance' % parser.output, data,
+               'Relative Resistance of population \nfor %s averaged over 50 simulation runs.' % parser.scenario,
+               5, 'iterations', '%')
 
-    for agent_type in data:
-        reordered_data[agent_type] = {}
-        for scenario in data[agent_type]:
-            # Get all values from all runs
-            reordered_data[agent_type][scenario] = get_scenario_data(data[agent_type][scenario], scenario)
-
-    for scenario in data['TRADITIONAL']:
-        write_plot([a for a in data], scenario, '%s/population_%s' % (parser.store_loc, scenario), reordered_data,
-                   'Total Population of Agent Types for %s averaged over 50 simulation runs.' % scenario,
-                   0, 'iterations', 'Population')
-        write_plot([a for a in data], scenario, '%s/SD_%s' % (parser.store_loc, scenario), reordered_data,
-                   'SD of Population of Agent Types for %s averaged over 50 simulation runs.' % scenario,
-                   1, 'iterations', 'SD')
-        write_plot([a for a in data], scenario, '%s/RSD_%s' % (parser.store_loc, scenario), reordered_data,
-                   'RSD of Population of Agent Types for %s averaged over 50 simulation runs.' % scenario,
-                   2, 'iterations', 'RSD(%)')
-        write_plot([a for a in data], scenario, '%s/onestd_%s' % (parser.store_loc, scenario), reordered_data,
-                   '%s of simulation runs within 1 STD of the mean\nfor %s averaged over 50 simulation runs.' % ('%', scenario),
-                   3, 'iterations', '%')
-        write_plot([a for a in data], scenario, '%s/twostd_%s' % (parser.store_loc, scenario), reordered_data,
-                   '%s of simulation runs within 2 STD of the mean\nfor %s averaged over 50 simulation runs.' % ('%', scenario),
-                   4, 'iterations', '%')
-        write_plot([a for a in data], scenario, '%s/resistance_%s' % (parser.store_loc, scenario), reordered_data,
-                   'Relative Resistance of population \nfor %s averaged over 50 simulation runs.' % scenario,
-                   5, 'iterations', '%')
+    write_plot([a for a in data], parser.scenario, '%s/delta_pop' % parser.output, data,
+               'Total Population of Agent Types within the Delta \nfor %s averaged over 50 simulation runs.' % parser.scenario,
+               6, 'iterations', 'Population')
+    write_plot([a for a in data], parser.scenario, '%s/out_delta_pop' % parser.output, data,
+               'Total Population of Agent Types outside the Delta \nfor %s averaged over 50 simulation runs.' % parser.scenario,
+               7, 'iterations', 'Population')
 
 
 if __name__ == '__main__':
